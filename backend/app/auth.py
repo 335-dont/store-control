@@ -218,8 +218,7 @@ async def guilds(request: Request):
             'bot_installed': None if bot_guild_ids is None else gid in bot_guild_ids,
             'invite_url': ('https://discord.com/oauth2/authorize?' + urlencode({
                 'client_id': client, 'scope': 'bot applications.commands',
-                'permissions': '0', 'guild_id': gid, 'disable_guild_select': 'true',
-                'integration_type': '0'
+                'permissions': '0', 'guild_id': gid, 'disable_guild_select': 'true'
             })) if client else None
         })
     return result

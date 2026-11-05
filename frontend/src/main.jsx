@@ -80,14 +80,8 @@ function DiscordProfile(){
   setBusy('select');setGuildError('');setNeedsLogin(false);setNotice('');
   try {
    const data=await authRequest(`/auth/guilds/${encodeURIComponent(id)}/select`,{method:'POST'});
-   setSelected(data.selected_guild_id);
-   const guild=guilds.find(g=>g.id===data.selected_guild_id);
-   setNotice(guild?.bot_installed===true?'Servidor selecionado.':'Autorize a instalação no Discord e depois volte ao painel.');
+   setSelected(data.selected_guild_id);setNotice('Servidor selecionado.');
    window.dispatchEvent(new CustomEvent('store-guild-changed',{detail:data.selected_guild_id}));
-   if(guild?.bot_installed!==true&&guild?.invite_url){
-    // Same-tab navigation works on iPhone even after the asynchronous save.
-    window.location.assign(guild.invite_url);
-   }
   } catch(e){showError(e)} finally{setBusy('')}
  };
  const logout=async()=>{
@@ -116,8 +110,7 @@ function DiscordProfile(){
      </select><ChevronDown size={16} aria-hidden="true"/>
     </div>
     {!guildLoading&&!guildError&&guilds.length===0&&<p className="profile-help">Nenhum servidor administrável encontrado.</p>}
-    {current&&<div className="guild-current">{current.icon_url&&<img src={current.icon_url} alt=""/>}<span>{current.bot_installed===true?'Bot instalado':current.bot_installed===false?'Bot não instalado':'Instalação não verificada'}</span>{current.bot_installed!==true&&current.invite_url&&<a className="guild-invite" href={current.invite_url}>Adicionar bot no Discord</a>}</div>}
-    {current&&current.bot_installed!==true&&<div className="guild-install-help"><p className="profile-help">{current.bot_installed===false?'Autorize o bot no Discord para adicioná-lo a este servidor.':'Não foi possível confirmar a instalação. Você pode adicionar o bot pelo Discord.'}</p><button className="profile-option" disabled={guildLoading||!!busy} onClick={loadGuilds}>{guildLoading?'Verificando…':'Já autorizei · verificar instalação'}</button></div>}
+    {current&&<div className="guild-current">{current.icon_url&&<img src={current.icon_url} alt=""/>}<span>{current.bot_installed===true?'Bot instalado':current.bot_installed===false?'Bot não instalado':'Instalação não verificada'}</span>{current.bot_installed===false&&current.invite_url&&<a className="guild-invite" href={current.invite_url} target="_blank" rel="noopener noreferrer">Adicionar bot</a>}</div>}
     <p className="profile-status" role="status">{busy==='select'?'Selecionando servidor…':notice}</p>
     {guildError&&<div className="profile-error" role="alert"><p>{guildError}</p>{needsLogin?<a href="/auth/login">Reconectar Discord</a>:<button className="profile-option" disabled={guildLoading||!!busy} onClick={loadGuilds}>Recarregar servidores</button>}</div>}
     <p className="profile-help">O estoque por servidor ainda não está disponível. Os dados atuais ficam neste navegador.</p>
