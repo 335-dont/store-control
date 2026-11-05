@@ -8,10 +8,10 @@ from base64 import urlsafe_b64encode
 from sqlalchemy import select
 from .db import SessionLocal
 from .models import DiscordCredential
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 router = APIRouter(prefix='/auth')
@@ -141,12 +141,28 @@ def me(request: Request):
                           if avatar else None)
     return user
 
+def require_same_origin(request: Request):
+    # Use the configured public OAuth origin behind a TLS-terminating proxy.
+    # Never trust arbitrary X-Forwarded-Host or X-Forwarded-Proto values here.
+    public_url = os.getenv('DISCORD_REDIRECT_URI', '').strip()
+    expected_url = public_url or str(request.base_url)
+    def origin_tuple(value):
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
+                return None
+            return (parsed.scheme.lower(), parsed.hostname.lower(), parsed.port or (443 if parsed.scheme == 'https' else 80))
+        except ValueError:
+            return None
+    expected = origin_tuple(expected_url)
+    origin = request.headers.get('origin')
+    source = origin if origin is not None else request.headers.get('referer', '')
+    if not expected or origin_tuple(source) != expected:
+        raise HTTPException(403, 'Origem não autorizada')
+
 @router.post('/logout')
 def logout(request: Request):
-    # Same-origin POST is required; browser's session cookie cannot be read by JS.
-    origin = request.headers.get('origin')
-    if origin and origin != str(request.base_url).rstrip('/'):
-        raise HTTPException(403, 'Origem não autorizada')
+    require_same_origin(request)
     user = session_user(request)
     if user:
         with SessionLocal() as db:
@@ -154,7 +170,9 @@ def logout(request: Request):
             if row:
                 db.delete(row)
                 db.commit()
-    response = RedirectResponse('/', status_code=303)
+    response = (JSONResponse({'ok': True}) if 'application/json' in request.headers.get('accept', '')
+                else RedirectResponse('/', status_code=303))
+    response.delete_cookie('sc_oauth_state', path='/')
     response.delete_cookie('sc_session', path='/')
     response.delete_cookie('sc_guild', path='/')
     return response
@@ -207,6 +225,7 @@ async def guilds(request: Request):
 
 @router.post('/guilds/{guild_id}/select')
 async def select_guild(guild_id: str, request: Request):
+    require_same_origin(request)
     if not guild_id.isdecimal():
         raise HTTPException(400, 'Servidor inválido')
     allowed = await managed_guilds(request)

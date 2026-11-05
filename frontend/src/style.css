@@ -7,5 +7,19 @@
 /* Discord account menu: anchored to the existing SC avatar in the top bar. */
 .discord-profile{position:relative;display:flex;align-items:center;z-index:30}.discord-avatar{border:0;padding:0;overflow:hidden;flex:none}.discord-avatar img,.profile-picture img{display:block;width:100%;height:100%;object-fit:cover;border-radius:50%}.profile-dismiss{position:fixed;inset:0;border:0;background:transparent;cursor:default;z-index:29}.profile-menu{position:absolute;right:0;top:calc(100% + 12px);width:min(290px,calc(100vw - 24px));padding:15px;border-radius:13px;background:var(--card);border:1px solid var(--border);box-shadow:0 16px 45px #0005;z-index:31}.profile-person{display:flex;align-items:center;gap:11px;min-width:0}.profile-person>span:last-child{min-width:0;display:flex;flex-direction:column;gap:3px}.profile-person strong,.profile-person small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.profile-person small,.profile-help{color:var(--muted);font-size:12px}.profile-picture{display:grid;place-items:center;width:43px;height:43px;border-radius:50%;background:#59607a;flex:none;overflow:hidden}.profile-divider{height:1px;background:var(--border);margin:13px 0}.profile-help{line-height:1.5;margin:8px 0 14px}.profile-option{width:100%;text-align:left;padding:10px;background:var(--pill);border:0;border-radius:8px}.profile-login{display:block;text-align:center;background:#5865f2;color:white;text-decoration:none;border-radius:9px;padding:11px;font-weight:600}
 
-/* Seletor de servidores Discord */
-.profile-menu{width:min(350px,calc(100vw - 20px));max-height:min(80vh,650px);overflow-y:auto}.guild-list{display:flex;flex-direction:column;gap:7px;max-height:310px;overflow:auto}.guild-item{display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);border-radius:9px;padding:6px}.guild-choice{display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:0;background:transparent;color:var(--text);padding:4px;border-radius:7px;min-width:0}.guild-choice.chosen{background:var(--pill)}.guild-choice img,.guild-fallback{height:34px;width:34px;border-radius:9px;object-fit:cover;flex:none}.guild-fallback{display:grid;place-items:center;background:#5865f2;color:white;font-size:12px}.guild-label{display:flex;flex-direction:column;min-width:0;gap:3px}.guild-label strong{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.guild-label small{font-size:10px;color:var(--muted)}.guild-invite{align-self:flex-end;font-size:11px;color:#9ba6ff;text-decoration:none;padding:3px 5px}
+/* Compact server selector; the native picker supports touch and keyboard. */
+.profile-menu{width:min(310px,calc(100vw - 28px));max-height:calc(100dvh - 110px);overflow-y:auto}
+.guild-select-label{display:block;margin-bottom:8px;font-size:12px;color:var(--muted)}
+.guild-select-wrap{position:relative}
+.guild-select{appearance:none;display:block;width:100%;min-height:44px;padding:11px 36px 11px 12px;background:var(--pill);color:var(--text);border:1px solid var(--border);border-radius:9px;font:inherit;font-size:14px;text-overflow:ellipsis;cursor:pointer}
+.guild-select-wrap>svg{position:absolute;right:12px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--muted)}
+.guild-select:focus-visible,.profile-option:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+.guild-select:disabled,.profile-option:disabled{opacity:.65;cursor:wait}
+.guild-current{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:11px;color:var(--muted);flex-wrap:wrap}
+.guild-current img{width:24px;height:24px;border-radius:7px;object-fit:cover}
+.guild-invite,.profile-error a{color:var(--blue)}
+.profile-status{font-size:11px;color:var(--muted);margin:8px 0}
+.profile-status:empty{display:none}
+.profile-error{font-size:12px;line-height:1.5;margin:12px 0;overflow-wrap:anywhere}
+.profile-error p{margin:0 0 8px}
+@media(max-width:600px){.guild-select{font-size:16px}.profile-menu{right:0}}

@@ -35,21 +35,88 @@ function ModulePage({page,notify,theme,setTheme}){
  {modal&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(false)}}><div className="modal card" role="dialog" aria-modal="true" aria-label={info.action}><div className="modal-head"><div><h2>{info.action}</h2><p>Dados temporários, somente para testar a interface.</p></div><button className="iconbutton" onClick={()=>setModal(false)} aria-label="Fechar"><X size={19}/></button></div>{info.fields.map(([name,type])=><label key={name} className="form-field"><span>{name}</span>{type==='select'?<select value={values[name]||''} onChange={e=>setValues({...values,[name]:e.target.value})}><option value="">Selecione</option><option>Administrador</option><option>Atendente</option><option>Entregador</option></select>:<input type={type} min={type==='number'?'0':undefined} value={values[name]||''} onChange={e=>setValues({...values,[name]:e.target.value})} placeholder={name}/>}</label>)}<div className="modal-actions"><button className="pill" onClick={()=>setModal(false)}>Cancelar</button><button className="pill primary" onClick={add}><Check size={15}/> Adicionar à prévia</button></div></div></div>}
  </div>
 }
+async function authRequest(url, options = {}) {
+ const response = await fetch(url, {...options, credentials:'same-origin', headers:{Accept:'application/json', ...options.headers}});
+ const body = await response.text();
+ let data = null;
+ try { data = body ? JSON.parse(body) : null; } catch {}
+ if (!response.ok) {
+  const error = new Error(typeof data?.detail === 'string' ? data.detail : 'Não foi possível concluir a operação. Tente novamente.');
+  error.status = response.status;
+  throw error;
+ }
+ if (data === null) throw new Error('O servidor enviou uma resposta inesperada. Tente novamente.');
+ return data;
+}
 function DiscordProfile(){
  const [user,setUser]=useState(null);
  const [open,setOpen]=useState(false);
  const [loading,setLoading]=useState(true);
- const [guilds,setGuilds]=useState([]); const [guildLoading,setGuildLoading]=useState(false); const [guildError,setGuildError]=useState(''); const [selected,setSelected]=useState(null);
- useEffect(()=>{let live=true;fetch('/auth/me',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(u=>{if(live)setUser(u)}).catch(()=>{}).finally(()=>{if(live)setLoading(false)});return()=>{live=false}},[]);
- const loadGuilds=async()=>{setGuildLoading(true);setGuildError('');try{const [r,s]=await Promise.all([fetch('/auth/guilds'),fetch('/auth/selected-guild')]);if(!r.ok)throw Error((await r.json()).detail||'Não foi possível listar servidores');setGuilds(await r.json());if(s.ok)setSelected((await s.json()).selected_guild_id)}catch(e){setGuildError(e.message)}finally{setGuildLoading(false)}};
+ const [guilds,setGuilds]=useState([]);
+ const [guildLoading,setGuildLoading]=useState(false);
+ const [guildError,setGuildError]=useState('');
+ const [needsLogin,setNeedsLogin]=useState(false);
+ const [selected,setSelected]=useState(null);
+ const [busy,setBusy]=useState('');
+ const [notice,setNotice]=useState('');
+ useEffect(()=>{let live=true;authRequest('/auth/me').then(u=>{if(live)setUser(u)}).catch(()=>{}).finally(()=>{if(live)setLoading(false)});return()=>{live=false}},[]);
+ useEffect(()=>{
+  if(!open)return;
+  const close=e=>{if(e.key==='Escape')setOpen(false)};
+  window.addEventListener('keydown',close);
+  return()=>window.removeEventListener('keydown',close);
+ },[open]);
+ const showError=e=>{setGuildError(e.message);setNeedsLogin(e.status===401)};
+ const loadGuilds=async()=>{
+  setGuildLoading(true);setGuildError('');setNeedsLogin(false);
+  try {
+   const [list,current]=await Promise.all([authRequest('/auth/guilds'),authRequest('/auth/selected-guild')]);
+   setGuilds(list);setSelected(list.some(g=>g.id===current.selected_guild_id)?current.selected_guild_id:null);
+  } catch(e){showError(e)} finally{setGuildLoading(false)}
+ };
  useEffect(()=>{if(open&&user)loadGuilds()},[open,user?.id]);
- const chooseGuild=async id=>{try{const r=await fetch(`/auth/guilds/${encodeURIComponent(id)}/select`,{method:'POST',credentials:'same-origin'});if(!r.ok)throw Error((await r.json()).detail||'Falha ao selecionar');setSelected(id);window.dispatchEvent(new CustomEvent('store-guild-changed',{detail:id}));}catch(e){setGuildError(e.message)}};
+ const chooseGuild=async id=>{
+  if(!id||busy)return;
+  setBusy('select');setGuildError('');setNeedsLogin(false);setNotice('');
+  try {
+   const data=await authRequest(`/auth/guilds/${encodeURIComponent(id)}/select`,{method:'POST'});
+   setSelected(data.selected_guild_id);setNotice('Servidor selecionado.');
+   window.dispatchEvent(new CustomEvent('store-guild-changed',{detail:data.selected_guild_id}));
+  } catch(e){showError(e)} finally{setBusy('')}
+ };
+ const logout=async()=>{
+  if(busy)return;
+  setBusy('logout');setGuildError('');setNeedsLogin(false);
+  try {
+   await authRequest('/auth/logout',{method:'POST'});
+   setUser(null);setGuilds([]);setSelected(null);setNotice('');setOpen(false);
+   window.dispatchEvent(new CustomEvent('store-guild-changed',{detail:null}));
+  } catch(e){showError(e)} finally{setBusy('')}
+ };
+ const current=guilds.find(g=>g.id===selected);
  return <div className="discord-profile">
   <button className="avatar discord-avatar" aria-label="Abrir perfil do Discord" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>
    {user?.avatar_url?<img src={user.avatar_url} alt="Avatar do Discord"/>:user?.username?.slice(0,2).toUpperCase()||'SC'}
   </button>
   {open&&<><button className="profile-dismiss" aria-label="Fechar menu" onClick={()=>setOpen(false)}/><div className="profile-menu">
-   {user?<><div className="profile-person"><span className="profile-picture">{user.avatar_url?<img src={user.avatar_url} alt=""/>:'SC'}</span><span><strong>{user.global_name||user.username}</strong><small>@{user.username}</small></span></div><div className="profile-divider"/><p className="profile-help">Selecione um servidor para gerenciar:</p><div className="guild-list">{guildLoading?<p className="profile-help">Carregando servidores...</p>:guildError?<p className="profile-help" role="alert">{guildError} <a href="/auth/login">Reconectar Discord</a></p>:guilds.length===0?<p className="profile-help">Nenhum servidor administrável encontrado.</p>:guilds.map(g=><div className="guild-item" key={g.id}><button className={'guild-choice '+(selected===g.id?'chosen':'')} onClick={()=>chooseGuild(g.id)}>{g.icon_url?<img src={g.icon_url} alt=""/>:<span className="guild-fallback">{g.name.slice(0,2).toUpperCase()}</span>}<span className="guild-label"><strong>{g.name}</strong><small>{g.bot_installed===true?'Bot instalado':g.bot_installed===false?'Bot não instalado':'Instalação não verificada'}{selected===g.id?' · Selecionado':''}</small></span></button>{g.bot_installed===false&&g.invite_url&&<a className="guild-invite" href={g.invite_url} target="_blank" rel="noopener noreferrer">Adicionar bot</a>}</div>)}</div><p className="profile-help">O estoque por servidor será ativado na próxima etapa. Os dados atuais ainda são locais.</p><form method="POST" action="/auth/logout"><button type="submit" className="profile-option">Sair da conta</button></form></>:<><p className="profile-help">{loading?'Verificando sessão...':'Conecte sua conta para acessar seu perfil.'}</p><a className="profile-login" href="/auth/login">Entrar com Discord</a></>}
+   {user?<>
+    <div className="profile-person"><span className="profile-picture">{user.avatar_url?<img src={user.avatar_url} alt=""/>:'SC'}</span><span><strong>{user.global_name||user.username}</strong><small>@{user.username}</small></span></div>
+    <div className="profile-divider"/>
+    <label className="guild-select-label" htmlFor="discord-guild">Servidor</label>
+    <div className="guild-select-wrap">
+     <select id="discord-guild" className="guild-select" value={selected||''} disabled={guildLoading||!!busy||guilds.length===0} onChange={e=>chooseGuild(e.target.value)}>
+      <option value="" disabled>{guildLoading?'Carregando servidores…':'Selecionar servidor'}</option>
+      {guilds.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
+     </select><ChevronDown size={16} aria-hidden="true"/>
+    </div>
+    {!guildLoading&&!guildError&&guilds.length===0&&<p className="profile-help">Nenhum servidor administrável encontrado.</p>}
+    {current&&<div className="guild-current">{current.icon_url&&<img src={current.icon_url} alt=""/>}<span>{current.bot_installed===true?'Bot instalado':current.bot_installed===false?'Bot não instalado':'Instalação não verificada'}</span>{current.bot_installed===false&&current.invite_url&&<a className="guild-invite" href={current.invite_url} target="_blank" rel="noopener noreferrer">Adicionar bot</a>}</div>}
+    <p className="profile-status" role="status">{busy==='select'?'Selecionando servidor…':notice}</p>
+    {guildError&&<div className="profile-error" role="alert"><p>{guildError}</p>{needsLogin?<a href="/auth/login">Reconectar Discord</a>:<button className="profile-option" disabled={guildLoading||!!busy} onClick={loadGuilds}>Recarregar servidores</button>}</div>}
+    <p className="profile-help">O estoque por servidor ainda não está disponível. Os dados atuais ficam neste navegador.</p>
+    <div className="profile-divider"/>
+    <button type="button" className="profile-option" disabled={!!busy} onClick={logout}>{busy==='logout'?'Saindo…':'Sair da conta'}</button>
+   </>:<><p className="profile-help">{loading?'Verificando sessão…':'Conecte sua conta para acessar seu perfil.'}</p><a className="profile-login" href="/auth/login">Entrar com Discord</a></>}
   </div></>}
  </div>;
 }
