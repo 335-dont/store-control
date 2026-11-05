@@ -1,0 +1,13 @@
+# Secrets / runtime
+.env
+.env.*
+!.env.example
+*.sqlite3
+*.db
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+frontend/dist/
+.DS_Store
+.vscode/
