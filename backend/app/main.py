@@ -11,17 +11,21 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from .db import get_db
 from .models import Catalog, Product
+from .auth import router as auth_router, session_user
 
 app = FastAPI(title='Store Control API', version='0.2.0', docs_url=None if os.getenv('APP_ENV') == 'production' else '/docs', redoc_url=None if os.getenv('APP_ENV') == 'production' else '/redoc', openapi_url=None if os.getenv('APP_ENV') == 'production' else '/openapi.json')
 
+app.include_router(auth_router)
+
 @app.middleware('http')
 async def protect_api(request: Request, call_next):
-    if request.url.path.startswith('/api/') and os.getenv('APP_ENV') == 'production':
+    if request.url.path.startswith('/api/'):
+        if os.getenv('APP_ENV') == 'production':
+            # Fase de transição: não expor dados de todos os servidores a qualquer usuário logado.
+            # API de catálogo permanece bloqueada até adicionar guild_id e autorização por servidor.
+            return JSONResponse({'detail': 'API de catálogo indisponível até implementar isolamento por servidor'}, status_code=503)
         key = os.getenv('API_ACCESS_KEY', '')
-        if not key:
-            return JSONResponse({'detail': 'API não configurada'}, status_code=503)
-        supplied = request.headers.get('X-API-Key', '')
-        if not secrets.compare_digest(supplied, key):
+        if key and not secrets.compare_digest(request.headers.get('X-API-Key', ''), key):
             return JSONResponse({'detail': 'Não autorizado'}, status_code=401)
     return await call_next(request)
 
