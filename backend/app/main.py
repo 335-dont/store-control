@@ -13,20 +13,22 @@ from .db import get_db
 from .models import Catalog, Product
 from .auth import router as auth_router, session_user
 from .store import router as store_router
+from .bot_stock import router as bot_stock_router
 
 app = FastAPI(title='Store Control API', version='0.2.0', docs_url=None if os.getenv('APP_ENV') == 'production' else '/docs', redoc_url=None if os.getenv('APP_ENV') == 'production' else '/redoc', openapi_url=None if os.getenv('APP_ENV') == 'production' else '/openapi.json')
 
 app.include_router(auth_router)
 app.include_router(store_router)
+app.include_router(bot_stock_router)
 
 @app.middleware('http')
 async def protect_api(request: Request, call_next):
     if request.url.path.startswith('/api/'):
-        if os.getenv('APP_ENV') == 'production' and not request.url.path.startswith('/api/store/'):
+        if os.getenv('APP_ENV') == 'production' and not request.url.path.startswith(('/api/store/', '/api/bot/')):
             # Fase de transição: não expor dados de todos os servidores a qualquer usuário logado.
             # API de catálogo permanece bloqueada até adicionar guild_id e autorização por servidor.
             return JSONResponse({'detail': 'API de catálogo indisponível até implementar isolamento por servidor'}, status_code=503)
-        if request.url.path.startswith('/api/store/'):
+        if request.url.path.startswith(('/api/store/', '/api/bot/')):
             return await call_next(request)
         key = os.getenv('API_ACCESS_KEY', '')
         if key and not secrets.compare_digest(request.headers.get('X-API-Key', ''), key):
