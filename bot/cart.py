@@ -10,6 +10,7 @@ from discord import app_commands
 LOG = logging.getLogger(__name__)
 MARKER = 'store-control-cart-owner:'
 MAX_LINES = 20
+SC_CART_UX_V2 = True
 
 
 def reais(value):
@@ -22,6 +23,7 @@ class CartState:
         self.guild_id = guild_id
         self.items = {}
         self.lock = asyncio.Lock()
+        self.message_id = None
 
 
 class Shop:
@@ -40,6 +42,18 @@ class Shop:
             r = await http.get(f'{self.api_url}/api/bot/guilds/{guild_id}/stock', headers={'X-Bot-Key': self.key})
             r.raise_for_status()
             return r.json()
+
+    async def update_cart(self, interaction, cart, data):
+        channel = interaction.channel or await self.client.fetch_channel(interaction.channel_id)
+        if cart.message_id is None:
+            async for message in channel.history(limit=40):
+                if message.author.id == self.client.user.id and message.components:
+                    cart.message_id = message.id
+                    break
+        if cart.message_id is None:
+            raise RuntimeError('Mensagem principal do carrinho não encontrada')
+        message = await channel.fetch_message(cart.message_id)
+        await message.edit(embed=self.cart_embed(cart, data))
 
     def install_command(self):
         @self.tree.command(name='publicar_loja', description='Publica o painel de compras neste canal')
@@ -75,6 +89,7 @@ class Shop:
                     try:
                         async for message in channel.history(limit=20):
                             if message.author.id == self.client.user.id and message.components:
+                                cart.message_id = message.id
                                 self.client.add_view(CartView(self, cart), message_id=message.id)
                                 break
                     except discord.HTTPException:
@@ -111,7 +126,7 @@ class ShopPanel(discord.ui.View):
         super().__init__(timeout=None)
         self.shop = shop
 
-    @discord.ui.button(label='Comprar MM2', emoji='🛒', style=discord.ButtonStyle.primary, custom_id='sc42:buy')
+    @discord.ui.button(label='Comprar MM2', emoji='🛒', style=discord.ButtonStyle.secondary, custom_id='sc42:buy')
     async def buy(self, interaction, button):
         if interaction.guild is None:
             return await interaction.response.send_message('Use dentro do servidor.', ephemeral=True)
@@ -138,8 +153,9 @@ class ShopPanel(discord.ui.View):
                     overwrites=overwrites, reason='Carrinho privado MM2')
                 cart = CartState(interaction.user.id, interaction.guild.id)
                 self.shop.carts[channel.id] = cart
-                await channel.send(interaction.user.mention, embed=self.shop.cart_embed(cart, data),
+                message = await channel.send(interaction.user.mention, embed=self.shop.cart_embed(cart, data),
                                    view=CartView(self.shop, cart), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+                cart.message_id = message.id
                 await interaction.followup.send(f'Seu carrinho: {channel.mention}', ephemeral=True)
             except (httpx.HTTPError, ValueError):
                 LOG.exception('Consulta de estoque falhou')
@@ -186,7 +202,7 @@ class StockCategorySelect(discord.ui.Select):
         content = '\n'.join(lines)
         if len(content) > 3800:
             content = content[:3790] + '…'
-        await interaction.response.send_message(embed=discord.Embed(title='📦 Estoque da loja', description=content or 'Sem produtos.'), ephemeral=True)
+        await interaction.response.edit_message(embed=discord.Embed(title='📦 Estoque da loja', description=content or 'Sem produtos.'), view=self.parent)
 
 
 class CartView(discord.ui.View):
@@ -201,7 +217,7 @@ class CartView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label='Adicionar produto', emoji='➕', style=discord.ButtonStyle.primary, custom_id='sc42:cart:add')
+    @discord.ui.button(label='Adicionar produto', emoji='➕', style=discord.ButtonStyle.secondary, custom_id='sc42:cart:add')
     async def add(self, interaction, button):
         await interaction.response.defer(ephemeral=True)
         try:
@@ -216,22 +232,17 @@ class CartView(discord.ui.View):
     async def remove(self, interaction, button):
         if not self.cart.items:
             return await interaction.response.send_message('Carrinho vazio.', ephemeral=True)
-        await interaction.response.send_message('Selecione um item para remover uma unidade:', view=RemoveView(self.shop, self.cart), ephemeral=True)
-
-    @discord.ui.button(label='Atualizar', emoji='🔄', style=discord.ButtonStyle.secondary, custom_id='sc42:cart:refresh')
-    async def refresh(self, interaction, button):
-        await interaction.response.defer()
         try:
             data = await self.shop.fetch(self.cart.guild_id)
-            await interaction.message.edit(embed=self.shop.cart_embed(self.cart, data), view=self)
         except (httpx.HTTPError, ValueError):
-            await interaction.followup.send('Falha ao atualizar estoque.', ephemeral=True)
+            return await interaction.response.send_message('Falha ao consultar produtos.', ephemeral=True)
+        await interaction.response.send_message('Selecione um item para remover uma unidade:', view=RemoveView(self.shop, self.cart, data), ephemeral=True)
 
-    @discord.ui.button(label='Finalizar pedido', emoji='💳', style=discord.ButtonStyle.success, custom_id='sc42:cart:checkout')
+    @discord.ui.button(label='Finalizar pedido', emoji='💳', style=discord.ButtonStyle.secondary, custom_id='sc42:cart:checkout')
     async def checkout(self, interaction, button):
         await interaction.response.send_message('Pagamento e finalização serão habilitados na próxima etapa. Nenhum estoque foi reservado.', ephemeral=True)
 
-    @discord.ui.button(label='Fechar carrinho', emoji='🗑️', style=discord.ButtonStyle.danger, custom_id='sc42:cart:close')
+    @discord.ui.button(label='Fechar carrinho', emoji='🗑️', style=discord.ButtonStyle.secondary, custom_id='sc42:cart:close')
     async def close(self, interaction, button):
         await interaction.response.send_message('Fechando seu carrinho...', ephemeral=True)
         try:
@@ -275,16 +286,27 @@ class CartCategorySelect(discord.ui.Select):
                 if not p.get('unlimited') and current >= p['stock']:
                     return await i.response.send_message('Limite de estoque atingido.', ephemeral=True)
                 self.cart.items[pid] = current + 1
-            await i.response.send_message('Produto adicionado! Clique em Atualizar no carrinho para ver o total.', ephemeral=True)
+            try:
+                await self.shop.update_cart(i, self.cart, latest)
+            except (discord.HTTPException, RuntimeError):
+                LOG.exception('Falha ao atualizar carrinho')
+                return await i.response.edit_message(content='Produto adicionado, mas a embed não foi atualizada.', view=None)
+            await i.response.edit_message(content=f"✅ {p.get('emoji') or '📦'} {p['name']} adicionado! Selecione outro produto se desejar.", view=view)
         select.callback = picked
         view.add_item(select)
-        await interaction.response.send_message('Escolha um produto:', view=view, ephemeral=True)
+        await interaction.response.edit_message(content='Escolha um produto:', view=view)
 
 
 class RemoveView(discord.ui.View):
-    def __init__(self, shop, cart):
+    def __init__(self, shop, cart, data):
         super().__init__(timeout=180)
-        options = [discord.SelectOption(label=pid[:100], value=pid, description=f'No carrinho: {qty}') for pid, qty in list(cart.items.items())[:25]]
+        products = {p['id']: p for p in data.get('products', [])}
+        options = [discord.SelectOption(
+            label=products[pid]['name'][:100] if pid in products else 'Produto indisponível',
+            value=pid,
+            description=(f"No carrinho: {qty} • {reais(products[pid]['price'])}" if pid in products else f"No carrinho: {qty}")[:100],
+            emoji=(products[pid].get('emoji') or None) if pid in products else None,
+        ) for pid, qty in list(cart.items.items())[:25]]
         select = discord.ui.Select(placeholder='Remover uma unidade de...', options=options)
         async def picked(interaction):
             if interaction.user.id != cart.owner_id:
@@ -296,6 +318,12 @@ class RemoveView(discord.ui.View):
                     cart.items.pop(pid, None)
                 else:
                     cart.items[pid] = qty - 1
-            await interaction.response.send_message('Unidade removida! Clique em Atualizar no carrinho.', ephemeral=True)
+            try:
+                latest = await shop.fetch(cart.guild_id)
+                await shop.update_cart(interaction, cart, latest)
+            except (httpx.HTTPError, ValueError, discord.HTTPException, RuntimeError):
+                LOG.exception('Falha ao atualizar carrinho após remoção')
+                return await interaction.response.edit_message(content='Unidade removida, mas a embed não foi atualizada.', view=None)
+            await interaction.response.edit_message(content='✅ Unidade removida. Use Remover produto para outra remoção.', view=None)
         select.callback = picked
         self.add_item(select)
