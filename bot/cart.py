@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import discord
 import httpx
+from loyalty import sync_member, sync_all, fetch_client
 from discord import app_commands
 
 LOG = logging.getLogger(__name__)
@@ -93,6 +94,19 @@ class Shop:
         await message.edit(embed=self.cart_embed(cart, data), view=CartView(self, cart, data))
 
     def install_command(self):
+        @self.tree.command(name='sincronizar_cargos', description='Sincroniza os cargos de compras dos clientes com pedidos entregues')
+        @app_commands.guild_only()
+        @app_commands.default_permissions(manage_guild=True)
+        async def sincronizar_cargos(interaction: discord.Interaction):
+            if not interaction.user.guild_permissions.manage_guild:
+                return await interaction.response.send_message('Apenas administradores podem sincronizar.', ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            try:
+                count = await sync_all(self, interaction.guild)
+                await interaction.followup.send(f'Sincronização concluída: {count} clientes verificados.', ephemeral=True)
+            except (httpx.HTTPError, discord.HTTPException, ValueError):
+                LOG.exception('Falha na sincronização de cargos')
+                await interaction.followup.send('Não foi possível sincronizar. Verifique o backend e as permissões do bot.', ephemeral=True)
         @self.tree.command(name='publicar_loja', description='Publica o painel de compras neste canal')
         @app_commands.guild_only()
         @app_commands.default_permissions(manage_guild=True)
@@ -880,6 +894,10 @@ class OrderTicketView(discord.ui.View):
             elif status == 'delivered':
                 asyncio.create_task(self.shop.close_channel_at_untracked(interaction.channel, 45, 'delivered'))
                 await interaction.followup.send('Entrega registrada. Ticket será encerrado em 45 segundos.', ephemeral=True)
+                try:
+                    await sync_member(self.shop, interaction.guild, buyer)
+                except (discord.HTTPException, httpx.HTTPError, ValueError):
+                    LOG.exception('Não foi possível sincronizar cargo de compras do cliente %s', buyer)
                 await self.delivery_log(interaction, updated, buyer, proofs=proofs)
                 try:
                     await interaction.channel.send('✅ Pedido entregue! Este canal será fechado em **45 segundos**.')
@@ -967,15 +985,20 @@ class OrderTicketView(discord.ui.View):
                 try:
                     user = await self.shop.client.fetch_user(buyer)
                 except (discord.NotFound, discord.HTTPException):
-                    user = None
-
-            # O cargo de destaque é o cargo mais alto do comprador (sem @everyone
-            # e sem cargos gerenciados por integrações/bots).
+                               # Exibe somente o cargo de compras correspondente ao total entregue.
             role_text = ''
-            if member is not None:
-                visible_roles = [r for r in member.roles if r != interaction.guild.default_role and not r.managed]
-                if visible_roles:
-                    role_text = f' {max(visible_roles, key=lambda r: r.position).mention}'
+            try:
+                loyalty = await fetch_client(self.shop, interaction.guild_id, buyer)
+                eligible = [t for t in loyalty['tiers'] if loyalty['total_cents'] >= t['minimum_cents']]
+                if eligible:
+                    chosen = max(eligible, key=lambda t: t['minimum_cents'])
+                    role = interaction.guild.get_role(int(chosen['role_id']))
+                    if role is not None and member is not None and role in member.roles:
+                        role_text = f' {role.mention}'
+            except (httpx.HTTPError, ValueError, KeyError):
+                LOG.exception('Falha ao obter cargo de compras para entrega')
+
+n).mention}'
 
             items = order.get('items') or []
             # Pedidos antigos podem não ter emoji salvo. Recupera do catálogo
