@@ -781,7 +781,7 @@ class OrderTicketView(discord.ui.View):
                 description=('• Entre no nosso servidor VIP pelo botão abaixo.\n'
                              '• Ao entrar, avise a equipe neste ticket e aguarde a entrega dos seus produtos.'),
                 color=0xD6B37A)
-            embed.add_field(name='Link do servidor', value=f'[Abrir servidor privado]({url})', inline=False)
+            embed.add_field(name='Link do servidor privado', value=url, inline=False)
             embed.set_footer(text='Store Control • Entrega manual')
             view = discord.ui.View(timeout=None)
             view.add_item(discord.ui.Button(label='Entrar no Servidor', url=url))
@@ -849,8 +849,8 @@ class OrderTicketView(discord.ui.View):
             updated = r.json()
             # Nunca bloquear a resposta do funcionário aguardando PATCH de canal (429).
             if status == 'approved':
-                asyncio.create_task(self.publish_approved(interaction.channel, updated, buyer))
-                await interaction.followup.send('Pagamento aprovado. Preparando a mensagem de entrega.', ephemeral=True)
+                await interaction.followup.send('Pagamento aprovado. Limpando o ticket e publicando a compra confirmada.', ephemeral=True)
+                await self.publish_approved(interaction.channel, updated, buyer)
             elif status == 'rejected':
                 asyncio.create_task(self.shop.close_channel_at_untracked(interaction.channel, 15, 'rejected'))
                 await interaction.followup.send('Pagamento rejeitado. Ticket será encerrado em 15 segundos.', ephemeral=True)
@@ -871,14 +871,30 @@ class OrderTicketView(discord.ui.View):
             await interaction.followup.send('Não foi possível concluir a ação. Confira o estado do pedido.', ephemeral=True)
 
     async def publish_approved(self, channel, order, buyer):
-        # Remove inclusive anexos e mensagens anteriores ao limite de bulk delete.
-        # Purge do discord.py utiliza exclusão individual para mensagens antigas.
+        """Publica a fase de entrega independentemente do clique em Já paguei.
+
+        Discord pode impor rate limits a exclusões; nunca deixa a compra aprovada
+        sem a mensagem da nova fase caso a limpeza seja parcialmente bloqueada.
+        """
+        removed = 0
+        failed = 0
         try:
-            await channel.purge(limit=None, bulk=True, reason='Reiniciar ticket após aprovação')
-        except discord.HTTPException:
-            LOG.exception('Falha na limpeza completa do ticket %s', channel.id)
-            # Não publicar nova embed sobre mensagens antigas sem registrar a falha.
-            return
+            # Em canais recém-criados, bulk delete é mais econômico. A biblioteca
+            # faz a exclusão individual das mensagens antigas, se necessário.
+            removed = len(await channel.purge(limit=None, bulk=True,
+                reason='Limpeza do ticket após aprovação de pagamento'))
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            LOG.warning('Limpeza em lote falhou no ticket %s: %s. Tentando individualmente.', channel.id, exc)
+            try:
+                async for message in channel.history(limit=None):
+                    try:
+                        await message.delete()
+                        removed += 1
+                    except (discord.Forbidden, discord.HTTPException):
+                        failed += 1
+            except (discord.Forbidden, discord.HTTPException):
+                LOG.exception('Não foi possível concluir a limpeza do ticket %s', channel.id)
+                failed += 1
         embed = order_embed(order)
         embed.title = '✅ Compra Confirmada'
         embed.description = (embed.description or '') + (
@@ -888,8 +904,13 @@ class OrderTicketView(discord.ui.View):
         embed.set_footer(text='Store Control • Compra confirmada')
         try:
             await channel.send(embed=embed, view=OrderTicketView(self.shop, approved=True))
+            LOG.info('Pedido %s aprovado: %s mensagens removidas, %s falhas', order['id'], removed, failed)
         except discord.HTTPException:
             LOG.exception('Falha ao publicar embed de entrega no ticket %s', channel.id)
+            try:
+                await channel.send('⚠️ Pagamento aprovado, mas não foi possível publicar a embed. Avise a equipe.')
+            except discord.HTTPException:
+                LOG.exception('Falha até no aviso de publicação do ticket %s', channel.id)
 
     async def delivery_log(self,interaction,order,buyer,proofs=None):
         try:
