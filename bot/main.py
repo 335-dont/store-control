@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 import discord
 import httpx
 from discord import app_commands
-from cart import Shop
+from cart import Shop, OrderTicketView
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ['DISCORD_BOT_TOKEN']
@@ -18,6 +18,7 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 shop = Shop(client, tree, API_URL, INTERNAL_KEY)
+client.add_view(OrderTicketView(shop))
 
 def money(value):
     try:
