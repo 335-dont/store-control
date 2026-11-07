@@ -161,15 +161,32 @@ class Shop:
         async def publicar_loja(interaction: discord.Interaction):
             if not interaction.user.guild_permissions.manage_guild:
                 return await interaction.response.send_message('Apenas administradores podem publicar a loja.', ephemeral=True)
+            # Atualiza o painel público já existente, sem criar mensagens duplicadas.
             embed = discord.Embed(title='🛒 Loja MM2', description='Escolha uma opção abaixo para começar.', color=0xC3A06B)
             embed.add_field(name='Comprar MM2', value='Abra seu carrinho privado.', inline=False)
             embed.add_field(name='Histórico de Compras', value='Disponível em uma próxima etapa.', inline=False)
             embed.add_field(name='Visualizar Estoque', value='Consulte os itens disponíveis.', inline=False)
+            templates = await self.fetch_message_templates(interaction.guild_id)
+            apply_message_template(embed, templates.get('shop'))
             try:
-                await interaction.channel.send(embed=embed, view=ShopPanel(self))
-                await interaction.response.send_message('Painel publicado neste canal.', ephemeral=True)
+                # Busca somente mensagens do próprio bot com o botão persistente do painel.
+                existing = None
+                async for msg in interaction.channel.history(limit=100):
+                    if msg.author.id != self.client.user.id:
+                        continue
+                    if any(getattr(component, 'custom_id', None) == 'sc42:buy'
+                           for row in msg.components for component in getattr(row, 'children', [])):
+                        existing = msg
+                        break
+                if existing:
+                    await existing.edit(embed=embed, view=ShopPanel(self))
+                    response = 'Painel de compras atualizado neste canal.'
+                else:
+                    await interaction.channel.send(embed=embed, view=ShopPanel(self))
+                    response = 'Painel de compras publicado neste canal.'
+                await interaction.response.send_message(response, ephemeral=True)
             except discord.HTTPException:
-                await interaction.response.send_message('Não consegui publicar. Verifique minhas permissões.', ephemeral=True)
+                await interaction.response.send_message('Não consegui publicar ou atualizar. Verifique minhas permissões.', ephemeral=True)
 
     async def restore(self):
         # Reagenda fechamentos pendentes após reinício do processo.
