@@ -946,45 +946,59 @@ class OrderTicketView(discord.ui.View):
             except discord.HTTPException:
                 LOG.exception('Falha até no aviso de publicação do ticket %s', channel.id)
 
-    async def delivery_log(self,interaction,order,buyer,proofs=None):
+    async def delivery_log(self, interaction, order, buyer, proofs=None):
+        """Publica o recibo visual no canal de entregas, preservando os dados do pedido."""
         try:
-            settings=await self.shop.fetch_pix(interaction.guild_id)
-            cid=settings.get('deliveries_channel_id','')
-            channel=interaction.guild.get_channel(int(cid)) if cid and cid.isdecimal() else None
-            if not isinstance(channel,discord.TextChannel):
-                LOG.warning('Canal de entregas não configurado no servidor %s',interaction.guild_id)
+            settings = await self.shop.fetch_pix(interaction.guild_id)
+            cid = str(settings.get('deliveries_channel_id') or '').strip()
+            channel = interaction.guild.get_channel(int(cid)) if cid.isdecimal() else None
+            if not isinstance(channel, discord.TextChannel):
+                LOG.warning('Canal de entregas não configurado no servidor %s', interaction.guild_id)
                 return
-            embed=order_embed(order)
-            embed.title='📦 Pedido entregue'
-            embed.add_field(name='Cliente',value=f'<@{buyer}>',inline=False)
-            embed.add_field(name='Entregador',value=interaction.user.mention,inline=False)
-            proof = None
-            if proofs:
-                proof = proofs[0].url
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
-            async for msg in interaction.channel.history(limit=0 if proof else 60):
-                if msg.created_at < cutoff:
-                    break
-                if msg.author.id != interaction.user.id:
-                    continue
-                for attachment in msg.attachments:
-                    if (attachment.content_type or '').startswith('image/') or attachment.filename.lower().endswith(('.png','.jpg','.jpeg','.webp')):
-                        proof = attachment.url
-                        break
-                if proof:
-                    break
-            if proof:
-                embed.set_image(url=proof)
-                embed.add_field(name='Comprovante',value='Imagem enviada pela equipe no ticket',inline=False)
-            else:
-                embed.add_field(name='Comprovante',value='Não anexado',inline=False)
+
+            buyer_member = interaction.guild.get_member(buyer)
+            if buyer_member is None:
+                try:
+                    buyer_member = await interaction.guild.fetch_member(buyer)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    buyer_member = None
+            buyer_user = buyer_member
+            if buyer_user is None:
+                try:
+                    buyer_user = await self.shop.client.fetch_user(buyer)
+                except (discord.NotFound, discord.HTTPException):
+                    buyer_user = None
+
+            total = str(order.get('total') or '0.00').replace('.', ',')
+            items = order.get('items') or []
+            lines = []
+            for item in items:
+                name = discord.utils.escape_markdown(str(item.get('name') or 'Produto'))
+                qty = int(item.get('quantity') or 0)
+                cents = int(item.get('unit_price_cents') or 0)
+                subtotal = Decimal(cents * qty) / Decimal(100)
+                lines.append(f'• **{name}** ({qty}x) - `R$ {subtotal:,.2f}`'.replace(',', '§').replace('.', ',').replace('§', '.'))
+            products = '\n'.join(lines) if lines else 'Nenhum produto informado'
+            if len(products) > 1024:
+                products = products[:1019] + '...'
+
+            embed = discord.Embed(title='🛒 Novo Pedido Entregue', color=0xD6B37A)
+            embed.add_field(name='👤 Cliente', value=f'<@{buyer}>', inline=False)
+            embed.add_field(name='💵 Valor Pago', value=f'`R$ {total}`', inline=False)
+            embed.add_field(name='🛍️ Produtos Adquiridos', value=products, inline=False)
+            if buyer_user:
+                embed.set_thumbnail(url=buyer_user.display_avatar.url)
+            embed.set_footer(text='Agradecemos pela sua preferência!')
+
+            # Comprovantes continuam anexados à publicação, sem alterar o layout do recibo.
+            files = []
             if proofs:
                 files = [await attachment.to_file() for attachment in proofs]
-                embed.set_image(url=f'attachment://{files[0].filename}')
+            if files:
                 await channel.send(embed=embed, files=files, allowed_mentions=discord.AllowedMentions.none())
             else:
                 await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-        except (httpx.HTTPError,discord.HTTPException):
+        except (httpx.HTTPError, discord.HTTPException, ValueError, TypeError):
             LOG.exception('Falha ao publicar entrega')
 
     async def schedule_close(self, channel, seconds, status):
