@@ -1,7 +1,7 @@
 import React,{useEffect,useState} from 'react';
 export default function PixSettings({notify}){
  const [guild,setGuild]=useState('');
- const [form,setForm]=useState({key:'',name:'',city:''});
+ const [form,setForm]=useState({key:'',name:'',city:'',delivery_role_id:'',deliveries_channel_id:''});
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState('');
  const load=async()=>{
@@ -10,7 +10,7 @@ export default function PixSettings({notify}){
    const g=await fetch('/auth/selected-guild',{credentials:'same-origin'}).then(r=>r.json());
    const id=g.selected_guild_id;
    setGuild(id||'');
-   if(!id){setForm({key:'',name:'',city:''});return}
+   if(!id){setForm({key:'',name:'',city:'',delivery_role_id:'',deliveries_channel_id:''});return}
    const r=await fetch('/api/store/pix',{headers:{'X-Store-Guild':id},credentials:'same-origin'});
    const data=await r.json();if(!r.ok)throw Error(data.detail||'Falha ao carregar');
    setForm(data);
@@ -31,6 +31,8 @@ export default function PixSettings({notify}){
  <label className="form-field"><span>Chave Pix</span><input value={form.key} maxLength={140} placeholder="CPF, e-mail, telefone ou chave aleatória" onChange={e=>setForm({...form,key:e.target.value})}/></label>
  <label className="form-field"><span>Nome do recebedor (até 25 caracteres)</span><input value={form.name} maxLength={25} placeholder="Nome da conta Pix" onChange={e=>setForm({...form,name:e.target.value})}/></label>
  <label className="form-field"><span>Cidade do recebedor (até 15 caracteres)</span><input value={form.city} maxLength={15} placeholder="Cidade" onChange={e=>setForm({...form,city:e.target.value})}/></label>
+ <label className="form-field"><span>ID do cargo de entregadores</span><input value={form.delivery_role_id||''} placeholder="ID do cargo Discord" onChange={e=>setForm({...form,delivery_role_id:e.target.value.trim()})}/></label>
+ <label className="form-field"><span>ID do canal de entregas</span><input value={form.deliveries_channel_id||''} placeholder="ID do canal Discord" onChange={e=>setForm({...form,deliveries_channel_id:e.target.value.trim()})}/></label>
  <p style={{opacity:.7}}>A chave é usada para gerar o código Pix Copia e Cola. Confirme os dados bancários antes de liberar vendas.</p>
  {error&&<p role="alert" style={{color:'#e57373'}}>{error}</p>}
  <button className="pill primary" disabled={busy||!guild} onClick={save}>{busy?'Aguarde…':'Salvar configurações Pix'}</button>

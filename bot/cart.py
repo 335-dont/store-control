@@ -2,6 +2,9 @@
 import asyncio
 import logging
 import io
+import time
+from datetime import datetime, timezone, timedelta
+from urllib.parse import urlparse
 import re
 import qrcode
 from pix_code import pix_code
@@ -107,6 +110,13 @@ class Shop:
                 await interaction.response.send_message('Não consegui publicar. Verifique minhas permissões.', ephemeral=True)
 
     async def restore(self):
+        # Reagenda fechamentos pendentes após reinício do processo.
+        for guild in self.client.guilds:
+            for channel in guild.text_channels:
+                match = re.search(r';close_at:(\d+);close_status:(rejected|delivered)$', channel.topic or '')
+                if match and (channel.topic or '').startswith('sc-order:'):
+                    deadline, status = int(match.group(1)), match.group(2)
+                    asyncio.create_task(self.close_channel_at(channel, deadline, status))
         # Reinicialização: recupera canais para evitar duplicações. Carrinhos não finalizados
         # recomeçam vazios (não há persistência de itens nesta etapa).
         for guild in self.client.guilds:
@@ -128,6 +138,18 @@ class Shop:
                                 break
                     except discord.HTTPException:
                         LOG.warning('Não foi possível restaurar controles do canal %s', channel.id)
+
+    async def close_channel_at(self, channel, deadline, status):
+        await asyncio.sleep(max(0, deadline - time.time()))
+        try:
+            # Evita excluir um canal reaproveitado ou cujo estado mudou.
+            topic = channel.topic or ''
+            if topic.endswith(f';close_at:{deadline};close_status:{status}') and topic.startswith('sc-order:'):
+                await channel.delete(reason=f'Pedido {status} finalizado no Store Control')
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            LOG.exception('Falha ao encerrar canal %s', channel.id)
 
     async def find_existing(self, guild, owner):
         for channel in guild.text_channels:
@@ -182,6 +204,11 @@ class ShopPanel(discord.ui.View):
                     interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
                     bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True),
                 }
+                settings = await self.shop.fetch_pix(interaction.guild.id)
+                role_id = settings.get('delivery_role_id', '')
+                role = interaction.guild.get_role(int(role_id)) if role_id.isdecimal() else None
+                if role:
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
                 channel = await interaction.guild.create_text_channel(
                     name=channel_name('cart', interaction.user.name), topic=f'{MARKER}{interaction.user.id}',
                     overwrites=overwrites, reason='Carrinho privado MM2')
@@ -450,6 +477,10 @@ class CartView(discord.ui.View):
             try:
                 # Garante que a mensagem principal possa ser editada depois da reserva.
                 pix=await self.shop.fetch_pix(self.cart.guild_id)
+                role_id = pix.get('delivery_role_id', '')
+                role = interaction.guild.get_role(int(role_id)) if role_id.isdecimal() else None
+                if role:
+                    await channel.set_permissions(role, view_channel=True, send_messages=True, read_message_history=True, reason='Equipe de entregas Store Control')
                 embed=order_embed(order)
                 qr_file=None
                 if pix.get('key'):
@@ -459,7 +490,7 @@ class CartView(discord.ui.View):
                     buffer=io.BytesIO();image.save(buffer,format='PNG');buffer.seek(0)
                     qr_file=discord.File(buffer,filename='pix.png')
                     embed.set_image(url='attachment://pix.png')
-                    embed.add_field(name='Pix Copia e Cola',value=f'```{code[:900]}```',inline=False)
+                    # O código completo é enviado somente pelo botão privado de copiar.
                 else:
                     embed.add_field(name='Pix',value='Aguardando a equipe configurar a chave Pix no painel web.',inline=False)
                 # Apaga componentes do carrinho e transforma a mensagem em pedido.
@@ -571,98 +602,259 @@ def order_embed(order):
 
 
 class StaffActionSelect(discord.ui.Select):
-    def __init__(self, view):
+    def __init__(self, view, approved=False):
         self.ticket_view = view
-        super().__init__(placeholder='Ações do Entregador', custom_id='sc43d:staff',
-            options=[
-                discord.SelectOption(label='Aprovar pagamento', value='approved', emoji='✅'),
-                discord.SelectOption(label='Rejeitar pagamento', value='rejected', emoji='❌'),
-                discord.SelectOption(label='Marcar entregue', value='delivered', emoji='📦'),
-            ], row=1)
+        options = ([
+            discord.SelectOption(label='Enviar link do servidor privado', value='link', emoji='🔗'),
+            discord.SelectOption(label='Notificar cliente', value='notify', emoji='🔔'),
+            discord.SelectOption(label='Como anexar comprovante', value='proof', emoji='📷'),
+            discord.SelectOption(label='Produto entregue', value='delivered', emoji='📦'),
+        ] if approved else [
+            discord.SelectOption(label='Aprovar Pagamento', value='approved', emoji='✅'),
+            discord.SelectOption(label='Rejeitar Pagamento', value='rejected', emoji='❌'),
+        ])
+        super().__init__(placeholder='Ações do Entregador', custom_id='sc44:staff:approved' if approved else 'sc44:staff:payment', options=options, row=0)
 
     async def callback(self, interaction):
-        await self.ticket_view.change(interaction, self.values[0], staff=True)
+        if not await self.ticket_view.is_staff(interaction):
+            return await interaction.response.send_message('Você não tem permissão para esta ação.', ephemeral=True)
+        action=self.values[0]
+        if action in ('approved','rejected','delivered'):
+            order,buyer=await self.ticket_view.get_order(interaction)
+            expected='approved' if action=='delivered' else 'payment_review'
+            if order['status']!=expected:
+                return await interaction.response.send_message('A situação do pedido mudou. Atualize a mensagem.',ephemeral=True)
+            await interaction.response.send_message(
+                f'Confirma **{ {"approved":"aprovar o pagamento","rejected":"rejeitar o pagamento","delivered":"marcar como entregue"}[action] }** do pedido de <@{buyer}>?',
+                view=ConfirmAction(self.ticket_view,action,order['id'],interaction.user.id),ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none())
+        elif action=='link':
+            await interaction.response.send_modal(PrivateServerModal(self.ticket_view))
+        elif action=='proof':
+            await interaction.response.send_message('Envie uma imagem como anexo **neste ticket**, usando sua conta da equipe, antes de selecionar **Produto entregue**. A imagem mais recente enviada por você nos últimos 10 minutos será incluída no registro da entrega.', ephemeral=True)
+        elif action=='notify':
+            order,buyer=await self.ticket_view.get_order(interaction)
+            if order['status']!='approved':
+                return await interaction.response.send_message('O pedido ainda não foi aprovado.',ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            try:
+                user=await interaction.client.fetch_user(buyer)
+                await user.send(f'🔔 O entregador está chamando você para receber o pedido **{order["id"][:8]}** no servidor {interaction.guild.name}.')
+                await interaction.followup.send('Cliente notificado por mensagem privada.',ephemeral=True)
+            except discord.HTTPException:
+                await interaction.followup.send('Não foi possível enviar DM ao cliente.',ephemeral=True)
+
+
+class ConfirmAction(discord.ui.View):
+    def __init__(self,ticket,action,order_id,staff_id):
+        super().__init__(timeout=120)
+        self.ticket=ticket;self.action=action;self.order_id=order_id;self.staff_id=staff_id
+
+    @discord.ui.button(label='Confirmar',style=discord.ButtonStyle.success)
+    async def confirm(self,interaction,button):
+        if interaction.user.id!=self.staff_id or not await self.ticket.is_staff(interaction):
+            return await interaction.response.send_message('Confirmação restrita ao funcionário.',ephemeral=True)
+        self.stop()
+        await self.ticket.change(interaction,self.action,expected_id=self.order_id)
+
+    @discord.ui.button(label='Cancelar',style=discord.ButtonStyle.secondary)
+    async def cancel(self,interaction,button):
+        if interaction.user.id!=self.staff_id:
+            return await interaction.response.send_message('Esta confirmação não é sua.',ephemeral=True)
+        self.stop()
+        await interaction.response.edit_message(content='Ação cancelada.',view=None)
+
+
+class PrivateServerModal(discord.ui.Modal,title='Enviar servidor privado'):
+    link=discord.ui.TextInput(label='Link do servidor privado Roblox',placeholder='https://www.roblox.com/...',max_length=500)
+    username=discord.ui.TextInput(label='Usuário Roblox (opcional)',required=False,max_length=50)
+
+    def __init__(self,ticket):
+        super().__init__(timeout=180)
+        self.ticket=ticket
+
+    async def on_submit(self,interaction):
+        if not await self.ticket.is_staff(interaction):
+            return await interaction.response.send_message('Acesso negado.',ephemeral=True)
+        order,buyer=await self.ticket.get_order(interaction)
+        if order['status']!='approved':
+            return await interaction.response.send_message('O pagamento não está aprovado.',ephemeral=True)
+        url=str(self.link.value).strip()
+        parsed=urlparse(url)
+        if parsed.scheme!='https' or parsed.hostname not in ('roblox.com','www.roblox.com') or not parsed.path.startswith('/games/'):
+            return await interaction.response.send_message('Informe um link HTTPS válido de servidor privado no roblox.com/games/.',ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        embed=discord.Embed(title='🎮 Servidor privado disponível',description='O entregador enviou o acesso para receber seus produtos.',color=0x57F287)
+        if str(self.username.value).strip():
+            embed.add_field(name='Usuário Roblox',value=discord.utils.escape_markdown(str(self.username.value).strip()),inline=False)
+        view=discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(label='Entrar no servidor privado',url=url))
+        await interaction.channel.send(content=f'<@{buyer}>',embed=embed,view=view,allowed_mentions=discord.AllowedMentions(users=True,roles=False,everyone=False))
+        await interaction.followup.send('Link enviado ao comprador.',ephemeral=True)
 
 
 class OrderTicketView(discord.ui.View):
-    def __init__(self, shop):
+    def __init__(self,shop,approved=False):
         super().__init__(timeout=None)
-        self.shop = shop
-        self.add_item(StaffActionSelect(self))
+        self.shop=shop
+        self.approved=approved
+        self.add_item(StaffActionSelect(self,approved=approved))
+        if not approved:
+            copy=discord.ui.Button(label='Copiar e Colar',emoji='🔗',style=discord.ButtonStyle.secondary,custom_id='sc44:copy',row=1)
+            copy.callback=self.copy_pix
+            self.add_item(copy)
+            paid=discord.ui.Button(label='Já paguei — Chamar Entregadores',emoji='💳',style=discord.ButtonStyle.secondary,custom_id='sc44:paid',row=1)
+            paid.callback=self.paid
+            self.add_item(paid)
 
-    async def get_order(self, interaction):
-        topic = getattr(interaction.channel, 'topic', '') or ''
+    async def get_order(self,interaction):
+        topic=getattr(interaction.channel,'topic','') or ''
         if not topic.startswith('sc-order:') or ';buyer:' not in topic:
-            raise ValueError('Este canal não é um ticket de pedido')
-        oid, buyer = topic[len('sc-order:'):].split(';buyer:', 1)
+            raise ValueError('Canal sem pedido')
+        oid,buyer=topic[len('sc-order:'):].split(';buyer:',1)
         async with httpx.AsyncClient(timeout=15) as http:
-            r = await http.get(
-                f'{self.shop.api_url}/api/bot/guilds/{interaction.guild_id}/orders/{oid}',
-                headers={'X-Bot-Key': self.shop.key})
+            r=await http.get(f'{self.shop.api_url}/api/bot/guilds/{interaction.guild_id}/orders/{oid}',headers={'X-Bot-Key':self.shop.key})
             r.raise_for_status()
-        return r.json(), int(buyer)
+        return r.json(),int(buyer)
 
-    async def change(self, interaction, new_status, staff=False):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+    async def is_staff(self,interaction):
+        if not interaction.guild or not isinstance(interaction.user,discord.Member):return False
+        if interaction.user.guild_permissions.manage_guild:return True
         try:
-            order, buyer = await self.get_order(interaction)
-            if staff:
-                if not interaction.user.guild_permissions.manage_guild:
-                    return await interaction.followup.send('Somente a equipe com Gerenciar Servidor pode realizar esta ação.', ephemeral=True)
-            elif interaction.user.id != buyer:
-                return await interaction.followup.send('Somente o comprador pode confirmar o pagamento.', ephemeral=True)
-            if not staff and order.get('status') == 'payment_review':
-                return await interaction.followup.send('A equipe já foi notificada. Envie seu comprovante aqui.', ephemeral=True)
+            settings=await self.shop.fetch_pix(interaction.guild_id)
+            role=settings.get('delivery_role_id')
+            return bool(role and any(str(r.id)==str(role) for r in interaction.user.roles))
+        except httpx.HTTPError:return False
+
+    async def paid(self,interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            order,buyer=await self.get_order(interaction)
+            if interaction.user.id!=buyer:
+                return await interaction.followup.send('Apenas o comprador pode confirmar.',ephemeral=True)
+            if order['status']=='payment_review':
+                return await interaction.followup.send('A equipe já foi notificada.',ephemeral=True)
+            if order['status']!='awaiting_payment':
+                return await interaction.followup.send('Pedido não está aguardando pagamento.',ephemeral=True)
             async with httpx.AsyncClient(timeout=15) as http:
-                r = await http.post(
-                    f'{self.shop.api_url}/api/bot/guilds/{interaction.guild_id}/orders/{order["id"]}/status',
-                    headers={'X-Bot-Key': self.shop.key}, json={'status': new_status})
-            if r.status_code == 409:
-                return await interaction.followup.send('Esta ação não está disponível para a situação atual do pedido.', ephemeral=True)
+                r=await http.post(f'{self.shop.api_url}/api/bot/guilds/{interaction.guild_id}/orders/{order["id"]}/status',headers={'X-Bot-Key':self.shop.key},json={'status':'payment_review'})
+                r.raise_for_status()
+            settings=await self.shop.fetch_pix(interaction.guild_id)
+            role=settings.get('delivery_role_id','')
+            mention=f'<@&{role}>' if role and role.isdecimal() and interaction.guild.get_role(int(role)) else ''
+            await interaction.channel.send(f'{mention} <@{buyer}> informou que realizou o pagamento. Envie o comprovante neste canal e aguarde a equipe.',allowed_mentions=discord.AllowedMentions(users=True,roles=bool(mention),everyone=False))
+            await interaction.followup.send('Equipe notificada. Envie o comprovante aqui.',ephemeral=True)
+        except (ValueError,httpx.HTTPError,discord.HTTPException):
+            LOG.exception('Falha ao notificar pagamento')
+            await interaction.followup.send('Não foi possível notificar a equipe.',ephemeral=True)
+
+    async def copy_pix(self,interaction):
+        try:
+            order,buyer=await self.get_order(interaction)
+            if interaction.user.id!=buyer:
+                return await interaction.response.send_message('Somente o comprador pode copiar o Pix.',ephemeral=True)
+            settings=await self.shop.fetch_pix(interaction.guild_id)
+            code=pix_code(settings['key'],settings['name'],settings['city'],order['total'])
+            await interaction.response.send_message(code,ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
+        except (ValueError,httpx.HTTPError,KeyError):
+            LOG.exception('Falha ao gerar Pix')
+            await interaction.response.send_message('Não foi possível gerar o Pix.',ephemeral=True)
+
+    async def change(self,interaction,status,expected_id=None):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            if not await self.is_staff(interaction):
+                return await interaction.followup.send('Acesso negado.',ephemeral=True)
+            order,buyer=await self.get_order(interaction)
+            if expected_id and order['id']!=expected_id:
+                return await interaction.followup.send('O pedido foi alterado.',ephemeral=True)
+            expected='approved' if status=='delivered' else 'payment_review'
+            if order['status']!=expected:
+                return await interaction.followup.send('Pedido já atualizado por outro funcionário.',ephemeral=True)
+            async with httpx.AsyncClient(timeout=15) as http:
+                r=await http.post(f'{self.shop.api_url}/api/bot/guilds/{interaction.guild_id}/orders/{order["id"]}/status',headers={'X-Bot-Key':self.shop.key},json={'status':status})
+            if r.status_code==409:
+                return await interaction.followup.send('Outro funcionário já processou este pedido.',ephemeral=True)
             r.raise_for_status()
-            updated = r.json()
-            if not staff:
-                try:
-                    await interaction.channel.send(
-                        f'<@{buyer}>, após o pagamento, envie o comprovante aqui e aguarde a confirmação de um entregador.\n\n'
-                        '🔔 **Entregadores notificados!**',
-                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-                except discord.HTTPException:
-                    LOG.exception('Notificação não enviada para pedido %s', order['id'])
-                return await interaction.followup.send('Pagamento em análise. Envie o comprovante neste canal.', ephemeral=True)
-            embed=order_embed(updated)
-            if interaction.message.embeds:
-                previous=interaction.message.embeds[0]
-                if previous.image and previous.image.url:embed.set_image(url=previous.image.url)
-                for field in previous.fields:
-                    if field.name=='Pix Copia e Cola':embed.add_field(name=field.name,value=field.value,inline=False)
-            await interaction.message.edit(embed=embed, view=self)
+            updated=r.json()
             try:
                 member=interaction.guild.get_member(buyer) or await interaction.guild.fetch_member(buyer)
-                await interaction.channel.edit(name=channel_name(new_status,member.name),reason='Status do pedido atualizado')
-            except discord.HTTPException:
-                LOG.warning('Não foi possível renomear canal %s',interaction.channel_id)
-            await interaction.followup.send('Situação do pedido atualizada.', ephemeral=True)
-        except (ValueError, httpx.HTTPError, discord.HTTPException):
-            LOG.exception('Falha ao atualizar pedido')
-            await interaction.followup.send('Não foi possível atualizar o pedido. Tente novamente.', ephemeral=True)
+                await interaction.channel.edit(name=channel_name(status,member.name),reason='Status do pedido')
+            except discord.HTTPException:LOG.warning('Falha ao renomear canal %s',interaction.channel_id)
+            # A confirmação é efêmera: interaction.message não é a mensagem do pedido.
+            # Busca a mensagem original do bot no canal, identificada pelos controles Pix.
+            original=None
+            async for candidate in interaction.channel.history(limit=100):
+                if candidate.author.id != interaction.client.user.id:
+                    continue
+                if any(component.custom_id in ('sc44:paid','sc44:copy','sc43b:paid','sc43d:copy','sc44:staff:approved')
+                       for row in candidate.components for component in row.children if getattr(component,'custom_id',None)):
+                    original=candidate
+                    break
+            if original is None:
+                if status in ('rejected','delivered'):
+                    if status == 'delivered':
+                        await self.delivery_log(interaction, updated, buyer)
+                    await self.schedule_close(interaction.channel, 15 if status == 'rejected' else 45, status)
+                LOG.error('Mensagem do pedido %s não encontrada',order['id'])
+                await interaction.followup.send('Pedido atualizado, mas não foi possível localizar a embed. Avise a equipe.',ephemeral=True)
+                return
+            if status=='approved':
+                embed=order_embed(updated)
+                embed.title='✅ Compra confirmada — Aguardando entrega'
+                embed.description+='\n\nO pagamento foi aprovado. Aguarde o entregador.'
+                await original.edit(embed=embed,attachments=[],view=OrderTicketView(self.shop,approved=True))
+                await interaction.channel.send(f'<@{buyer}> seu pagamento foi aprovado! Aguarde a entrega.',allowed_mentions=discord.AllowedMentions(users=True,roles=False,everyone=False))
+            elif status=='rejected':
+                await original.edit(embed=order_embed(updated),attachments=[],view=None)
+                await interaction.channel.send(f'<@{buyer}> pagamento rejeitado. Este canal será fechado em **15 segundos**.',allowed_mentions=discord.AllowedMentions(users=True,roles=False,everyone=False))
+                await self.schedule_close(interaction.channel, 15, 'rejected')
+            elif status=='delivered':
+                await original.edit(embed=order_embed(updated),attachments=[],view=None)
+                await self.delivery_log(interaction,updated,buyer)
+                await interaction.channel.send(f'<@{buyer}> pedido entregue! Este canal será fechado em **45 segundos**.',allowed_mentions=discord.AllowedMentions(users=True,roles=False,everyone=False))
+                await self.schedule_close(interaction.channel, 45, 'delivered')
+            await interaction.followup.send('Ação confirmada.',ephemeral=True)
+        except (ValueError,httpx.HTTPError,discord.HTTPException):
+            LOG.exception('Erro na atualização do pedido')
+            await interaction.followup.send('Não foi possível concluir a ação. Confira o estado do pedido.',ephemeral=True)
 
-    @discord.ui.button(label='Já paguei — Chamar Entregadores', emoji='💳', style=discord.ButtonStyle.secondary, custom_id='sc43b:paid', row=0)
-    async def paid(self, interaction, button):
-        await self.change(interaction, 'payment_review')
-
-
-    @discord.ui.button(label='Copiar e Colar', emoji='🔗', style=discord.ButtonStyle.secondary, custom_id='sc43d:copy', row=0)
-    async def copy_pix(self, interaction, button):
+    async def delivery_log(self,interaction,order,buyer):
         try:
-            order, buyer = await self.get_order(interaction)
-            if interaction.user.id != buyer:
-                return await interaction.response.send_message('Somente o comprador pode consultar o Pix.', ephemeral=True)
-            pix = await self.shop.fetch_pix(interaction.guild_id)
-            if not pix.get('key'):
-                return await interaction.response.send_message('Pix não configurado.', ephemeral=True)
-            code = pix_code(pix['key'], pix['name'], pix['city'], order['total'])
-            await interaction.response.send_message(code, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-        except (ValueError, httpx.HTTPError, KeyError):
-            LOG.exception('Falha ao consultar Pix')
-            await interaction.response.send_message('Não foi possível consultar o Pix.', ephemeral=True)
+            settings=await self.shop.fetch_pix(interaction.guild_id)
+            cid=settings.get('deliveries_channel_id','')
+            channel=interaction.guild.get_channel(int(cid)) if cid and cid.isdecimal() else None
+            if not isinstance(channel,discord.TextChannel):
+                LOG.warning('Canal de entregas não configurado no servidor %s',interaction.guild_id)
+                return
+            embed=order_embed(order)
+            embed.title='📦 Pedido entregue'
+            embed.add_field(name='Cliente',value=f'<@{buyer}>',inline=False)
+            embed.add_field(name='Entregador',value=interaction.user.mention,inline=False)
+            proof = None
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            async for msg in interaction.channel.history(limit=60):
+                if msg.created_at < cutoff:
+                    break
+                if msg.author.id != interaction.user.id:
+                    continue
+                for attachment in msg.attachments:
+                    if (attachment.content_type or '').startswith('image/') or attachment.filename.lower().endswith(('.png','.jpg','.jpeg','.webp')):
+                        proof = attachment.url
+                        break
+                if proof:
+                    break
+            if proof:
+                embed.set_image(url=proof)
+                embed.add_field(name='Comprovante',value='Imagem enviada pela equipe no ticket',inline=False)
+            else:
+                embed.add_field(name='Comprovante',value='Não anexado',inline=False)
+            await channel.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
+        except (httpx.HTTPError,discord.HTTPException):
+            LOG.exception('Falha ao publicar entrega')
+
+    async def schedule_close(self, channel, seconds, status):
+        deadline = int(time.time()) + seconds
+        topic = re.sub(r';close_at:\d+;close_status:(rejected|delivered)$', '', channel.topic or '')
+        await channel.edit(topic=f'{topic};close_at:{deadline};close_status:{status}', reason='Agendar fechamento automático')
+        asyncio.create_task(self.shop.close_channel_at(channel, deadline, status))

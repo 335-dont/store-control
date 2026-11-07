@@ -19,6 +19,7 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 shop = Shop(client, tree, API_URL, INTERNAL_KEY)
 client.add_view(OrderTicketView(shop))
+client.add_view(OrderTicketView(shop,approved=True))
 
 def money(value):
     try:

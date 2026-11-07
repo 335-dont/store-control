@@ -19,6 +19,8 @@ class PixInput(BaseModel):
     key: str = Field(default='', max_length=140)
     name: str = Field(default='', max_length=25)
     city: str = Field(default='', max_length=15)
+    delivery_role_id: str = Field(default='', pattern=r'^$|^\d{15,22}$')
+    deliveries_channel_id: str = Field(default='', pattern=r'^$|^\d{15,22}$')
 
 def read_pix(db, gid):
     obj=db.get(GuildPix,gid)
