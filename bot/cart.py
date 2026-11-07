@@ -783,6 +783,9 @@ class OrderTicketView(discord.ui.View):
                              'e aguarde seu produto ser entregue!\n\n'
                              f'> {url}'),
                 color=0xD6B37A)
+            # Foto do funcionário que enviou o link, como na referência.
+            # display_avatar funciona tanto com avatar personalizado quanto com o padrão.
+            embed.set_thumbnail(url=interaction.user.display_avatar.url)
             embed.set_footer(text=f'Store Control © {datetime.now(timezone.utc).year} • Entrega manual')
             view = discord.ui.View(timeout=None)
             view.add_item(discord.ui.Button(label='Entrar no Servidor', emoji='🔰', url=url))
