@@ -6,3 +6,6 @@ from app import pix_settings  # noqa: F401
 from app import loyalty  # noqa: F401
 Base.metadata.create_all(bind=engine)
 print('Tabelas iniciais criadas.')
+
+from app import message_templates  # noqa: F401
+Base.metadata.create_all(bind=engine)
