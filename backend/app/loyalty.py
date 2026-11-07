@@ -87,23 +87,72 @@ async def web_clients(request: Request, db: Session = Depends(get_db)):
         .group_by(GuildOrder.buyer_id).order_by(func.sum(GuildOrder.total_cents).desc()).limit(200)).all()
     return {'clients': [{'buyer_id': buyer, 'total_cents': int(total)} for buyer, total in totals]}
 
+# Cache de cargos por servidor: evita consultar o Discord a cada abertura da aba.
+import asyncio
+import time
+import logging
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
+
+ROLE_CACHE = {}
+ROLE_LOCKS = {}
+ROLE_TTL = 600
+ROLE_STALE_TTL = 86400
+ROLE_LOG = logging.getLogger(__name__)
+
+def _retry_seconds(response):
+    value = response.headers.get('Retry-After', '')
+    try:
+        return max(1, min(900, int(float(value))))
+    except (TypeError, ValueError):
+        return 60
+
 @router.get('/api/store/loyalty/roles')
 async def available_roles(request: Request):
-    """Fetch roles using server bot credentials, after guild admin authorization."""
     guild_id = await authorize(request)
     token = os.getenv('DISCORD_BOT_TOKEN', '').strip()
     if not token:
         raise HTTPException(503, 'DISCORD_BOT_TOKEN não configurado no serviço web')
-    try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            r = await http.get(f'https://discord.com/api/v10/guilds/{guild_id}/roles',
-                               headers={'Authorization': f'Bot {token}'})
-    except httpx.RequestError:
-        raise HTTPException(502, 'Discord indisponível para consultar cargos')
-    if r.status_code == 403:
-        raise HTTPException(403, 'Bot sem acesso aos cargos deste servidor')
-    if r.status_code != 200:
-        raise HTTPException(502, f'Não foi possível listar cargos (Discord HTTP {r.status_code})')
-    return {'roles': [{'id': str(x['id']), 'name': x['name'], 'color': x.get('color', 0),
-                       'position': x.get('position', 0), 'managed': x.get('managed', False)}
-                      for x in r.json() if x.get('name') != '@everyone' and not x.get('managed')]}
+    now = time.monotonic()
+    cached = ROLE_CACHE.get(guild_id)
+    if cached and now < cached['expires']:
+        return {'roles': cached['roles'], 'cached': True}
+    lock = ROLE_LOCKS.setdefault(guild_id, asyncio.Lock())
+    async with lock:
+        now = time.monotonic()
+        cached = ROLE_CACHE.get(guild_id)
+        if cached and now < cached['expires']:
+            return {'roles': cached['roles'], 'cached': True}
+        if cached and now < cached.get('retry_at', 0):
+            return {'roles': cached['roles'], 'cached': True, 'stale': True}
+        try:
+            async with httpx.AsyncClient(timeout=12) as http:
+                r = await http.get(f'https://discord.com/api/v10/guilds/{guild_id}/roles',
+                                   headers={'Authorization': f'Bot {token}'})
+        except httpx.RequestError:
+            if cached and now < cached['stale_until']:
+                cached['retry_at'] = now + 60
+                return {'roles': cached['roles'], 'cached': True, 'stale': True}
+            raise HTTPException(502, 'Discord indisponível para consultar cargos; tente novamente em instantes')
+        if r.status_code == 429:
+            delay = _retry_seconds(r)
+            if cached and now < cached['stale_until']:
+                cached['retry_at'] = now + delay
+                return {'roles': cached['roles'], 'cached': True, 'stale': True}
+            raise HTTPException(503, f'Discord limitou consultas. Aguarde cerca de {delay} segundos e tente novamente.',
+                                headers={'Retry-After': str(delay)})
+        if r.status_code == 403:
+            raise HTTPException(403, 'Bot sem acesso aos cargos deste servidor')
+        if r.status_code == 401:
+            raise HTTPException(503, 'Token do bot rejeitado pelo Discord; verifique a variável no Railway')
+        if r.status_code != 200:
+            if cached and now < cached['stale_until']:
+                cached['retry_at'] = now + 60
+                return {'roles': cached['roles'], 'cached': True, 'stale': True}
+            raise HTTPException(502, f'Não foi possível listar cargos (Discord HTTP {r.status_code})')
+        roles = [{'id': str(x['id']), 'name': x['name'], 'color': x.get('color', 0),
+                  'position': x.get('position', 0), 'managed': x.get('managed', False)}
+                 for x in r.json() if x.get('name') != '@everyone' and not x.get('managed')]
+        ROLE_CACHE[guild_id] = {'roles': roles, 'expires': now + ROLE_TTL,
+                                'stale_until': now + ROLE_STALE_TTL, 'retry_at': 0}
+        return {'roles': roles, 'cached': False}
