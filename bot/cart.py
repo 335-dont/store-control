@@ -570,10 +570,25 @@ def order_embed(order):
     return embed
 
 
+class StaffActionSelect(discord.ui.Select):
+    def __init__(self, view):
+        self.ticket_view = view
+        super().__init__(placeholder='Ações do Entregador', custom_id='sc43d:staff',
+            options=[
+                discord.SelectOption(label='Aprovar pagamento', value='approved', emoji='✅'),
+                discord.SelectOption(label='Rejeitar pagamento', value='rejected', emoji='❌'),
+                discord.SelectOption(label='Marcar entregue', value='delivered', emoji='📦'),
+            ], row=1)
+
+    async def callback(self, interaction):
+        await self.ticket_view.change(interaction, self.values[0], staff=True)
+
+
 class OrderTicketView(discord.ui.View):
     def __init__(self, shop):
         super().__init__(timeout=None)
         self.shop = shop
+        self.add_item(StaffActionSelect(self))
 
     async def get_order(self, interaction):
         topic = getattr(interaction.channel, 'topic', '') or ''
@@ -596,6 +611,8 @@ class OrderTicketView(discord.ui.View):
                     return await interaction.followup.send('Somente a equipe com Gerenciar Servidor pode realizar esta ação.', ephemeral=True)
             elif interaction.user.id != buyer:
                 return await interaction.followup.send('Somente o comprador pode confirmar o pagamento.', ephemeral=True)
+            if not staff and order.get('status') == 'payment_review':
+                return await interaction.followup.send('A equipe já foi notificada. Envie seu comprovante aqui.', ephemeral=True)
             async with httpx.AsyncClient(timeout=15) as http:
                 r = await http.post(
                     f'{self.shop.api_url}/api/bot/guilds/{interaction.guild_id}/orders/{order["id"]}/status',
@@ -604,6 +621,15 @@ class OrderTicketView(discord.ui.View):
                 return await interaction.followup.send('Esta ação não está disponível para a situação atual do pedido.', ephemeral=True)
             r.raise_for_status()
             updated = r.json()
+            if not staff:
+                try:
+                    await interaction.channel.send(
+                        f'<@{buyer}>, após o pagamento, envie o comprovante aqui e aguarde a confirmação de um entregador.\n\n'
+                        '🔔 **Entregadores notificados!**',
+                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+                except discord.HTTPException:
+                    LOG.exception('Notificação não enviada para pedido %s', order['id'])
+                return await interaction.followup.send('Pagamento em análise. Envie o comprovante neste canal.', ephemeral=True)
             embed=order_embed(updated)
             if interaction.message.embeds:
                 previous=interaction.message.embeds[0]
@@ -621,18 +647,22 @@ class OrderTicketView(discord.ui.View):
             LOG.exception('Falha ao atualizar pedido')
             await interaction.followup.send('Não foi possível atualizar o pedido. Tente novamente.', ephemeral=True)
 
-    @discord.ui.button(label='Já paguei', emoji='💳', style=discord.ButtonStyle.secondary, custom_id='sc43b:paid', row=0)
+    @discord.ui.button(label='Já paguei — Chamar Entregadores', emoji='💳', style=discord.ButtonStyle.secondary, custom_id='sc43b:paid', row=0)
     async def paid(self, interaction, button):
         await self.change(interaction, 'payment_review')
 
-    @discord.ui.button(label='Aprovar pagamento', emoji='✅', style=discord.ButtonStyle.secondary, custom_id='sc43b:approve', row=1)
-    async def approve(self, interaction, button):
-        await self.change(interaction, 'approved', staff=True)
 
-    @discord.ui.button(label='Rejeitar pagamento', emoji='❌', style=discord.ButtonStyle.secondary, custom_id='sc43b:reject', row=1)
-    async def reject(self, interaction, button):
-        await self.change(interaction, 'rejected', staff=True)
-
-    @discord.ui.button(label='Marcar entregue', emoji='📦', style=discord.ButtonStyle.secondary, custom_id='sc43b:delivered', row=2)
-    async def delivered(self, interaction, button):
-        await self.change(interaction, 'delivered', staff=True)
+    @discord.ui.button(label='Copiar e Colar', emoji='🔗', style=discord.ButtonStyle.secondary, custom_id='sc43d:copy', row=0)
+    async def copy_pix(self, interaction, button):
+        try:
+            order, buyer = await self.get_order(interaction)
+            if interaction.user.id != buyer:
+                return await interaction.response.send_message('Somente o comprador pode consultar o Pix.', ephemeral=True)
+            pix = await self.shop.fetch_pix(interaction.guild_id)
+            if not pix.get('key'):
+                return await interaction.response.send_message('Pix não configurado.', ephemeral=True)
+            code = pix_code(pix['key'], pix['name'], pix['city'], order['total'])
+            await interaction.response.send_message(code, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        except (ValueError, httpx.HTTPError, KeyError):
+            LOG.exception('Falha ao consultar Pix')
+            await interaction.response.send_message('Não foi possível consultar o Pix.', ephemeral=True)
