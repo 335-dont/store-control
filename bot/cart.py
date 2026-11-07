@@ -1,6 +1,10 @@
 """Etapa 4.2: painel público e carrinho privado (prévia, sem cobrança)."""
 import asyncio
 import logging
+import io
+import re
+import qrcode
+from pix_code import pix_code
 from decimal import Decimal
 
 import discord
@@ -18,11 +22,31 @@ def reais(value):
     return ('R$ ' + format(Decimal(str(value)), '.2f')).replace('.', ',')
 
 
+def channel_name(status, user):
+    labels={'cart':'🛒・carrinho','awaiting_payment':'🟡・pendente',
+            'payment_review':'🔵・analise','approved':'🟢・aprovado',
+            'rejected':'🔴・rejeitado','cancelled':'⚫・cancelado',
+            'expired':'⚫・expirado','delivered':'✅・entregue'}
+    username=re.sub(r'[^a-z0-9_-]+','-',str(user).lower()).strip('-')[:40] or 'cliente'
+    return f'{labels.get(status,"🛒・carrinho")}-{username}'
+
+async def prune_cart(shop, cart, data):
+    products={str(p['id']):p for p in data.get('products',[])}
+    removed=[]
+    async with cart.lock:
+        for pid,qty in list(cart.items.items()):
+            p=products.get(str(pid))
+            if not p or (not p.get('unlimited') and int(p.get('stock',0))<qty):
+                removed.append(cart.names.get(str(pid),'Produto indisponível'))
+                cart.items.pop(pid,None)
+    return removed
+
 class CartState:
     def __init__(self, owner_id, guild_id):
         self.owner_id = owner_id
         self.guild_id = guild_id
         self.items = {}
+        self.names = {}
         self.lock = asyncio.Lock()
         self.message_id = None
         self.stage = 'categories'
@@ -44,6 +68,12 @@ class Shop:
     async def fetch(self, guild_id):
         async with httpx.AsyncClient(timeout=12) as http:
             r = await http.get(f'{self.api_url}/api/bot/guilds/{guild_id}/stock', headers={'X-Bot-Key': self.key})
+            r.raise_for_status()
+            return r.json()
+
+    async def fetch_pix(self,guild_id):
+        async with httpx.AsyncClient(timeout=12) as http:
+            r=await http.get(f'{self.api_url}/api/bot/guilds/{guild_id}/pix',headers={'X-Bot-Key':self.key})
             r.raise_for_status()
             return r.json()
 
@@ -116,7 +146,7 @@ class Shop:
                 total += subtotal
                 lines.append(f"{product.get('emoji') or '📦'} **{product['name']}** ×{qty} — {reais(subtotal)}")
             else:
-                lines.append(f'⚠️ Item indisponível ({pid}) ×{qty}')
+                lines.append('⚠️ Produto indisponível — atualize o carrinho')
         if len(lines) > MAX_LINES:
             lines = lines[:MAX_LINES] + ['… Outros itens no carrinho']
         embed = discord.Embed(title='🛒 Carrinho MM2', description='\n'.join(lines)[:3500] or 'Seu carrinho está vazio. Selecione uma categoria.', color=0xC3A06B)
@@ -153,7 +183,7 @@ class ShopPanel(discord.ui.View):
                     bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True),
                 }
                 channel = await interaction.guild.create_text_channel(
-                    name=f'carrinho-{interaction.user.id}', topic=f'{MARKER}{interaction.user.id}',
+                    name=channel_name('cart', interaction.user.name), topic=f'{MARKER}{interaction.user.id}',
                     overwrites=overwrites, reason='Carrinho privado MM2')
                 cart = CartState(interaction.user.id, interaction.guild.id)
                 self.shop.carts[channel.id] = cart
@@ -306,6 +336,7 @@ class CartView(discord.ui.View):
     async def show(self, interaction, data=None):
         if data is None:
             data = await self.shop.fetch(self.cart.guild_id)
+        removed = await prune_cart(self.shop, self.cart, data)
         self.data = data
         self.build()
         embed = self.shop.cart_embed(self.cart, data)
@@ -323,6 +354,8 @@ class CartView(discord.ui.View):
             embed.add_field(name='Editar quantidade', value=(product['name'] if product else 'Produto') +
                 '\nEscolha 0 para remover do carrinho.', inline=False)
         await interaction.response.edit_message(embed=embed, view=self)
+        if removed:
+            await interaction.followup.send('Itens removidos por falta de estoque: ' + ', '.join(removed)[:1500], ephemeral=True)
 
     async def category_selected(self, interaction):
         self.cart.category_id = self.children[0].values[0]
@@ -347,6 +380,7 @@ class CartView(discord.ui.View):
                         ephemeral=True)
                 for pid in selected:
                     self.cart.items[pid] = self.cart.items.get(pid, 0) + 1
+                    self.cart.names[pid] = products[pid]['name']
             await self.show(interaction, latest)
         except (httpx.HTTPError, ValueError):
             if not interaction.response.is_done():
@@ -391,65 +425,62 @@ class CartView(discord.ui.View):
             await interaction.response.send_message('Falha ao consultar estoque.', ephemeral=True)
 
     async def checkout(self, interaction):
-        if not self.cart.items:
-            return await interaction.response.send_message('Adicione produtos antes de finalizar.', ephemeral=True)
         await interaction.response.defer(ephemeral=True, thinking=True)
+        latest=await self.shop.fetch(self.cart.guild_id)
+        removed=await prune_cart(self.shop,self.cart,latest)
+        if removed:
+            await self.shop.update_cart(interaction,self.cart,latest)
+            return await interaction.followup.send('Produtos removidos por falta de estoque: '+', '.join(removed)[:1500]+'. Confira o carrinho antes de finalizar.',ephemeral=True)
         async with self.cart.lock:
             if not self.cart.items:
-                return await interaction.followup.send('Seu carrinho está vazio.', ephemeral=True)
-            lines = [{'product_id': str(pid), 'quantity': qty} for pid, qty in self.cart.items.items() if qty > 0]
+                return await interaction.followup.send('Seu carrinho está vazio.',ephemeral=True)
+            lines=[{'product_id':str(pid),'quantity':qty} for pid,qty in self.cart.items.items() if qty>0]
             try:
                 async with httpx.AsyncClient(timeout=20) as http:
-                    response = await http.post(
-                        f'{self.shop.api_url}/api/bot/guilds/{self.cart.guild_id}/orders',
-                        headers={'X-Bot-Key': self.shop.key},
-                        json={'buyer_id': str(self.cart.owner_id), 'items': lines,
-                              'reservation_minutes': 15})
-                if response.status_code == 409:
-                    return await interaction.followup.send('Estoque alterado ou insuficiente. Confira os produtos antes de tentar novamente.', ephemeral=True)
+                    response=await http.post(f'{self.shop.api_url}/api/bot/guilds/{self.cart.guild_id}/orders',
+                        headers={'X-Bot-Key':self.shop.key},json={'buyer_id':str(self.cart.owner_id),'items':lines,'reservation_minutes':15})
+                if response.status_code==409:
+                    return await interaction.followup.send('Estoque insuficiente ou alterado. Confira os produtos.',ephemeral=True)
                 response.raise_for_status()
-                order = response.json()
-            except (httpx.HTTPError, ValueError):
-                LOG.exception('Não foi possível criar o pedido')
-                return await interaction.followup.send('Não foi possível reservar os itens. Tente novamente.', ephemeral=True)
+                order=response.json()
+            except (httpx.HTTPError,ValueError):
+                LOG.exception('Falha ao reservar pedido')
+                return await interaction.followup.send('Não foi possível reservar os produtos.',ephemeral=True)
+            channel=interaction.channel
             try:
-                guild = interaction.guild
-                bot_member = guild.me
-                if bot_member is None:
-                    raise RuntimeError('Membro do bot não encontrado')
-                perms = {
-                    guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                    interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-                    bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True),
-                }
-                channel = await guild.create_text_channel(
-                    name=f'pedido-{str(order["id"])[:8]}',
-                    topic=f'sc-order:{order["id"]};buyer:{self.cart.owner_id}',
-                    overwrites=perms, reason='Pedido Store Control')
-                await channel.send(
-                    content=interaction.user.mention,
-                    embed=order_embed(order), view=OrderTicketView(self.shop),
-                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+                # Garante que a mensagem principal possa ser editada depois da reserva.
+                pix=await self.shop.fetch_pix(self.cart.guild_id)
+                embed=order_embed(order)
+                qr_file=None
+                if pix.get('key'):
+                    code=pix_code(pix['key'],pix['name'],pix['city'],order['total'])
+                    qr=qrcode.QRCode(border=2,box_size=8);qr.add_data(code);qr.make(fit=True)
+                    image=qr.make_image(fill_color='black',back_color='white')
+                    buffer=io.BytesIO();image.save(buffer,format='PNG');buffer.seek(0)
+                    qr_file=discord.File(buffer,filename='pix.png')
+                    embed.set_image(url='attachment://pix.png')
+                    embed.add_field(name='Pix Copia e Cola',value=f'```{code[:900]}```',inline=False)
+                else:
+                    embed.add_field(name='Pix',value='Aguardando a equipe configurar a chave Pix no painel web.',inline=False)
+                # Apaga componentes do carrinho e transforma a mensagem em pedido.
+                message=await channel.fetch_message(self.cart.message_id)
+                await message.edit(embed=embed,view=OrderTicketView(self.shop),attachments=[qr_file] if qr_file else [])
+                await channel.edit(name=channel_name('awaiting_payment',interaction.user.name),
+                    topic=f'sc-order:{order["id"]};buyer:{self.cart.owner_id}',reason='Pedido aguardando pagamento')
+                self.shop.carts.pop(channel.id,None)
+                self.cart.items.clear()
+                await interaction.followup.send('Pedido reservado neste mesmo canal. Prazo inicial de pagamento: 15 minutos.',ephemeral=True)
             except Exception:
-                LOG.exception('Falha ao abrir ticket; cancelando reserva')
+                LOG.exception('Falha ao transformar carrinho em pedido')
                 try:
                     async with httpx.AsyncClient(timeout=15) as http:
-                        cancel = await http.post(
-                            f'{self.shop.api_url}/api/bot/guilds/{self.cart.guild_id}/orders/{order["id"]}/status',
-                            headers={'X-Bot-Key': self.shop.key}, json={'status': 'cancelled'})
+                        cancel=await http.post(f'{self.shop.api_url}/api/bot/guilds/{self.cart.guild_id}/orders/{order["id"]}/status',
+                            headers={'X-Bot-Key':self.shop.key},json={'status':'cancelled'})
                         cancel.raise_for_status()
                 except Exception:
-                    LOG.exception('ATENÇÃO: reserva %s precisa ser cancelada manualmente', order['id'])
-                    return await interaction.followup.send('Erro ao criar ticket. A reserva pode continuar ativa; avise a equipe e informe o pedido ' + order['id'], ephemeral=True)
-                return await interaction.followup.send('Não consegui criar o ticket. A reserva foi cancelada e o estoque devolvido.', ephemeral=True)
-            self.cart.items.clear()
-            self.cart.stage = 'categories'
-            try:
-                latest = await self.shop.fetch(self.cart.guild_id)
-                await self.shop.update_cart(interaction, self.cart, latest)
-            except Exception:
-                LOG.exception('Pedido criado, mas não foi possível atualizar carrinho')
-            await interaction.followup.send(f'Pedido criado! Acompanhe em {channel.mention}. Prazo inicial de pagamento: 15 minutos.', ephemeral=True)
+                    LOG.exception('RESERVA %s pode exigir intervenção manual',order['id'])
+                    return await interaction.followup.send('Erro na preparação do pagamento. Avise a equipe e informe o pedido '+order['id'],ephemeral=True)
+                await interaction.followup.send('Não foi possível preparar o pagamento. Reserva cancelada.',ephemeral=True)
 
     async def empty(self, interaction):
         async with self.cart.lock:
@@ -528,7 +559,7 @@ def order_embed(order):
         'expired': 'Expirado',
         'delivered': 'Entregue',
     }
-    lines = [f"📦 **{item['name']}** ×{item['quantity']}" for item in order.get('items', [])]
+    lines = [f"📦 **{item['name']}** ×{item['quantity']} — {reais(Decimal(item['unit_price_cents'])*item['quantity']/100)}" for item in order.get('items', [])]
     embed = discord.Embed(
         title='🛒 Pedido Store Control',
         description='\n'.join(lines)[:3500] or 'Sem produtos', color=0xC3A06B)
@@ -573,7 +604,18 @@ class OrderTicketView(discord.ui.View):
                 return await interaction.followup.send('Esta ação não está disponível para a situação atual do pedido.', ephemeral=True)
             r.raise_for_status()
             updated = r.json()
-            await interaction.message.edit(embed=order_embed(updated), view=self)
+            embed=order_embed(updated)
+            if interaction.message.embeds:
+                previous=interaction.message.embeds[0]
+                if previous.image and previous.image.url:embed.set_image(url=previous.image.url)
+                for field in previous.fields:
+                    if field.name=='Pix Copia e Cola':embed.add_field(name=field.name,value=field.value,inline=False)
+            await interaction.message.edit(embed=embed, view=self)
+            try:
+                member=interaction.guild.get_member(buyer) or await interaction.guild.fetch_member(buyer)
+                await interaction.channel.edit(name=channel_name(new_status,member.name),reason='Status do pedido atualizado')
+            except discord.HTTPException:
+                LOG.warning('Não foi possível renomear canal %s',interaction.channel_id)
             await interaction.followup.send('Situação do pedido atualizada.', ephemeral=True)
         except (ValueError, httpx.HTTPError, discord.HTTPException):
             LOG.exception('Falha ao atualizar pedido')
