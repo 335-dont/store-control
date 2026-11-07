@@ -190,8 +190,10 @@ async def managed_guilds(request: Request):
                                 headers={'Authorization': f'Bearer {token}'})
     if result.status_code == 401:
         raise HTTPException(401, 'Autorização Discord expirada. Entre novamente.')
+    if result.status_code == 429:
+        raise HTTPException(503, 'Discord limitou consultas temporariamente. Aguarde e tente novamente.')
     if result.status_code != 200:
-        raise HTTPException(502, 'Discord indisponível para listar servidores')
+        raise HTTPException(502, f'Discord indisponível para listar servidores (HTTP {result.status_code})')
     return [g for g in result.json() if g.get('owner') or int(g.get('permissions', '0')) & (ADMINISTRATOR | MANAGE_GUILD)]
 
 @router.get('/guilds')

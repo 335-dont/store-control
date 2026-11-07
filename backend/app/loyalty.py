@@ -1,6 +1,7 @@
 """Cargos de fidelidade por servidor; somente pedidos entregues contam."""
 import os
 import secrets
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, String, select, func
@@ -85,3 +86,24 @@ async def web_clients(request: Request, db: Session = Depends(get_db)):
         .where(GuildOrder.guild_id == guild_id, GuildOrder.status == 'delivered')
         .group_by(GuildOrder.buyer_id).order_by(func.sum(GuildOrder.total_cents).desc()).limit(200)).all()
     return {'clients': [{'buyer_id': buyer, 'total_cents': int(total)} for buyer, total in totals]}
+
+@router.get('/api/store/loyalty/roles')
+async def available_roles(request: Request):
+    """Fetch roles using server bot credentials, after guild admin authorization."""
+    guild_id = await authorize(request)
+    token = os.getenv('DISCORD_BOT_TOKEN', '').strip()
+    if not token:
+        raise HTTPException(503, 'DISCORD_BOT_TOKEN não configurado no serviço web')
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            r = await http.get(f'https://discord.com/api/v10/guilds/{guild_id}/roles',
+                               headers={'Authorization': f'Bot {token}'})
+    except httpx.RequestError:
+        raise HTTPException(502, 'Discord indisponível para consultar cargos')
+    if r.status_code == 403:
+        raise HTTPException(403, 'Bot sem acesso aos cargos deste servidor')
+    if r.status_code != 200:
+        raise HTTPException(502, f'Não foi possível listar cargos (Discord HTTP {r.status_code})')
+    return {'roles': [{'id': str(x['id']), 'name': x['name'], 'color': x.get('color', 0),
+                       'position': x.get('position', 0), 'managed': x.get('managed', False)}
+                      for x in r.json() if x.get('name') != '@everyone' and not x.get('managed')]}
