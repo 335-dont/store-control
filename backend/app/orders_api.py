@@ -125,6 +125,7 @@ def create_order(guild_id: str, payload: CreateOrder, db: Session = Depends(get_
             unit_cents = cents(p['price'])
             total += unit_cents * line.quantity
             lines.append({'product_id': p['id'], 'name': p['name'],
+                          'emoji': p.get('emoji') or '📦',
                           'quantity': line.quantity, 'unit_price_cents': unit_cents})
         for line in payload.items:
             if not products[line.product_id]['unlimited']:

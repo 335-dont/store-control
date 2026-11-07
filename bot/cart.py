@@ -947,7 +947,7 @@ class OrderTicketView(discord.ui.View):
                 LOG.exception('Falha até no aviso de publicação do ticket %s', channel.id)
 
     async def delivery_log(self, interaction, order, buyer, proofs=None):
-        """Publica o recibo visual no canal de entregas, preservando os dados do pedido."""
+        """Recibo de entrega com cargo e emojis do catálogo, no layout de referência."""
         try:
             settings = await self.shop.fetch_pix(interaction.guild_id)
             cid = str(settings.get('deliveries_channel_id') or '').strip()
@@ -956,48 +956,77 @@ class OrderTicketView(discord.ui.View):
                 LOG.warning('Canal de entregas não configurado no servidor %s', interaction.guild_id)
                 return
 
-            buyer_member = interaction.guild.get_member(buyer)
-            if buyer_member is None:
+            member = interaction.guild.get_member(buyer)
+            if member is None:
                 try:
-                    buyer_member = await interaction.guild.fetch_member(buyer)
+                    member = await interaction.guild.fetch_member(buyer)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    buyer_member = None
-            buyer_user = buyer_member
-            if buyer_user is None:
+                    member = None
+            user = member
+            if user is None:
                 try:
-                    buyer_user = await self.shop.client.fetch_user(buyer)
+                    user = await self.shop.client.fetch_user(buyer)
                 except (discord.NotFound, discord.HTTPException):
-                    buyer_user = None
+                    user = None
 
-            total = str(order.get('total') or '0.00').replace('.', ',')
+            # O cargo de destaque é o cargo mais alto do comprador (sem @everyone
+            # e sem cargos gerenciados por integrações/bots).
+            role_text = ''
+            if member is not None:
+                visible_roles = [r for r in member.roles if r != interaction.guild.default_role and not r.managed]
+                if visible_roles:
+                    role_text = f' {max(visible_roles, key=lambda r: r.position).mention}'
+
             items = order.get('items') or []
+            # Pedidos antigos podem não ter emoji salvo. Recupera do catálogo
+            # atual apenas quando necessário; pedidos novos preservam o original.
+            missing_emoji = any(not item.get('emoji') for item in items)
+            emojis_by_id = {}
+            if missing_emoji:
+                try:
+                    stock = await self.shop.fetch(interaction.guild_id)
+                    payload = stock.get('data', stock)
+                    emojis_by_id = {str(p.get('id')): p.get('emoji') for p in payload.get('products', [])}
+                except (httpx.HTTPError, ValueError, TypeError, KeyError):
+                    LOG.warning('Não foi possível recuperar emojis do estoque para entrega %s', order.get('id'))
+
             lines = []
             for item in items:
                 name = discord.utils.escape_markdown(str(item.get('name') or 'Produto'))
                 qty = int(item.get('quantity') or 0)
                 cents = int(item.get('unit_price_cents') or 0)
                 subtotal = Decimal(cents * qty) / Decimal(100)
-                lines.append(f'• **{name}** ({qty}x) - `R$ {subtotal:,.2f}`'.replace(',', '§').replace('.', ',').replace('§', '.'))
-            products = '\n'.join(lines) if lines else 'Nenhum produto informado'
-            if len(products) > 1024:
-                products = products[:1019] + '...'
+                price = reais(subtotal)
+                emoji = str(item.get('emoji') or emojis_by_id.get(str(item.get('product_id'))) or '📦').strip()
+                # Não permite que conteúdo do catálogo insira menções ou quebras extras.
+                emoji = emoji.splitlines()[0][:120] if emoji else '📦'
+                lines.append(f'• {emoji} **{name}** ({qty}x) - `{price}`')
 
-            embed = discord.Embed(title='🛒 Novo Pedido Entregue', color=0xD6B37A)
-            embed.add_field(name='👤 Cliente', value=f'<@{buyer}>', inline=False)
-            embed.add_field(name='💵 Valor Pago', value=f'`R$ {total}`', inline=False)
-            embed.add_field(name='🛍️ Produtos Adquiridos', value=products, inline=False)
-            if buyer_user:
-                embed.set_thumbnail(url=buyer_user.display_avatar.url)
+            products = '\n'.join(lines) or 'Nenhum produto informado'
+            # Discord limita a descrição a 4096 caracteres.
+            total = reais(order.get('total') or '0')
+            heading = (
+                f'👤 **Cliente**\n<@{buyer}>{role_text}\n\n'
+                f'💵 **Valor Pago**\n`{total}`\n\n'
+                '🛍️ **Produtos Adquiridos**\n'
+            )
+            max_products = max(0, 4096 - len(heading) - 3)
+            if len(products) > max_products:
+                products = products[:max_products - 3] + '...'
+            embed = discord.Embed(
+                title='🛒 Novo Pedido Entregue',
+                description=heading + products,
+                color=0xD6B37A,
+            )
+            if user is not None:
+                embed.set_thumbnail(url=user.display_avatar.url)
             embed.set_footer(text='Agradecemos pela sua preferência!')
 
-            # Comprovantes continuam anexados à publicação, sem alterar o layout do recibo.
-            files = []
-            if proofs:
-                files = [await attachment.to_file() for attachment in proofs]
-            if files:
-                await channel.send(embed=embed, files=files, allowed_mentions=discord.AllowedMentions.none())
-            else:
-                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            files = [await attachment.to_file() for attachment in proofs] if proofs else []
+            await channel.send(
+                embed=embed, files=files,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         except (httpx.HTTPError, discord.HTTPException, ValueError, TypeError):
             LOG.exception('Falha ao publicar entrega')
 
