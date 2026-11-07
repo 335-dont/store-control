@@ -985,7 +985,9 @@ class OrderTicketView(discord.ui.View):
                 try:
                     user = await self.shop.client.fetch_user(buyer)
                 except (discord.NotFound, discord.HTTPException):
-                               # Exibe somente o cargo de compras correspondente ao total entregue.
+                    user = None
+
+            # Exibe somente o cargo de compras correspondente ao total entregue.
             role_text = ''
             try:
                 loyalty = await fetch_client(self.shop, interaction.guild_id, buyer)
@@ -997,8 +999,6 @@ class OrderTicketView(discord.ui.View):
                         role_text = f' {role.mention}'
             except (httpx.HTTPError, ValueError, KeyError):
                 LOG.exception('Falha ao obter cargo de compras para entrega')
-
-n).mention}'
 
             items = order.get('items') or []
             # Pedidos antigos podem não ter emoji salvo. Recupera do catálogo
