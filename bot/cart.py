@@ -136,9 +136,7 @@ class Shop:
         if cart.message_id is None:
             raise RuntimeError('Mensagem principal do carrinho não encontrada')
         message = await channel.fetch_message(cart.message_id)
-        embed = self.cart_embed(cart, data)
-        templates = await self.fetch_message_templates(cart.guild_id)
-        apply_message_template(embed, templates.get('cart'), {'cliente': f'<@{cart.owner_id}>'})
+        embed = await self.configured_cart_embed(cart, data)
         await message.edit(embed=embed, view=CartView(self, cart, data))
 
     def install_command(self):
@@ -163,11 +161,12 @@ class Shop:
                 return await interaction.response.send_message('Apenas administradores podem publicar a loja.', ephemeral=True)
             # Atualiza o painel público já existente, sem criar mensagens duplicadas.
             embed = discord.Embed(title='🛒 Loja MM2', description='Escolha uma opção abaixo para começar.', color=0xC3A06B)
-            embed.add_field(name='Comprar MM2', value='Abra seu carrinho privado.', inline=False)
-            embed.add_field(name='Histórico de Compras', value='Disponível em uma próxima etapa.', inline=False)
-            embed.add_field(name='Visualizar Estoque', value='Consulte os itens disponíveis.', inline=False)
             templates = await self.fetch_message_templates(interaction.guild_id)
-            apply_message_template(embed, templates.get('shop'))
+            # Painel publico: o texto salvo substitui integralmente o texto padrao.
+            shop_template = templates.get('shop')
+            if isinstance(shop_template, dict) and shop_template.get('description'):
+                embed.description = None
+            apply_message_template(embed, shop_template)
             try:
                 # Busca somente mensagens do próprio bot com o botão persistente do painel.
                 existing = None
@@ -255,6 +254,26 @@ class Shop:
                 return channel
         return None
 
+    async def configured_cart_embed(self, cart, data):
+        """Gera a embed e aplica a configuracao mais recente do servidor."""
+        embed = self.cart_embed(cart, data)
+        templates = await self.fetch_message_templates(cart.guild_id)
+        template = templates.get('cart')
+        if isinstance(template, dict):
+            variables = {
+                'cliente': f'<@{cart.owner_id}>',
+                'valor': next((field.value for field in embed.fields if field.name == 'Total estimado'), 'R$ 0,00'),
+                'produto': embed.description or 'Seu carrinho está vazio.',
+            }
+            # O total e os produtos permanecem sempre visiveis e calculados pelo bot.
+            apply_message_template(embed, template, variables)
+            if template.get('description'):
+                # Nao duplica a lista de produtos se {produto} ja foi utilizado.
+                raw = str(template['description'])
+                if '{produto}' in raw:
+                    embed.description = embed.description[:4096]
+        return embed
+
     def cart_embed(self, cart, data):
         products = {p['id']: p for p in data.get('products', [])}
         lines = []
@@ -312,7 +331,7 @@ class ShopPanel(discord.ui.View):
                     overwrites=overwrites, reason='Carrinho privado MM2')
                 cart = CartState(interaction.user.id, interaction.guild.id)
                 self.shop.carts[channel.id] = cart
-                message = await channel.send(interaction.user.mention, embed=self.shop.cart_embed(cart, data),
+                message = await channel.send(interaction.user.mention, embed=await self.shop.configured_cart_embed(cart, data),
                                    view=CartView(self.shop, cart, data), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
                 cart.message_id = message.id
                 await interaction.followup.send(f'Seu carrinho: {channel.mention}', ephemeral=True)
@@ -464,7 +483,7 @@ class CartView(discord.ui.View):
         removed = await prune_cart(self.shop, self.cart, data)
         self.data = data
         self.build()
-        embed = self.shop.cart_embed(self.cart, data)
+        embed = await self.shop.configured_cart_embed(self.cart, data)
         if self.cart.stage == 'categories':
             embed.add_field(name='Categorias', value='Selecione uma categoria abaixo para começar.', inline=False)
         elif self.cart.stage == 'products':
@@ -674,7 +693,7 @@ class QuantityModal(discord.ui.Modal):
                 return await interaction.followup.send('Mensagem principal não encontrada.', ephemeral=True)
             message = await channel.fetch_message(self.cart.message_id)
             view = CartView(self.shop, self.cart, latest)
-            await message.edit(embed=self.shop.cart_embed(self.cart, latest), view=view)
+            await message.edit(embed=await self.shop.configured_cart_embed(self.cart, latest), view=view)
             await interaction.followup.send(
                 'Produto removido do carrinho.' if qty == 0 else
                 f'Quantidade de {self.product_name} atualizada para {qty}.', ephemeral=True)
