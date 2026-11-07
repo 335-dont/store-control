@@ -2,7 +2,8 @@
 import os
 import secrets
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from urllib.parse import urlparse, parse_qs
 from sqlalchemy import String, JSON
 from sqlalchemy.orm import Mapped, mapped_column, Session
 from .db import Base, get_db
@@ -21,6 +22,21 @@ class PixInput(BaseModel):
     city: str = Field(default='', max_length=15)
     delivery_role_id: str = Field(default='', pattern=r'^$|^\d{15,22}$')
     deliveries_channel_id: str = Field(default='', pattern=r'^$|^\d{15,22}$')
+    private_server_url: str = Field(default='', max_length=500)
+
+    @field_validator('private_server_url')
+    @classmethod
+    def validate_private_server_url(cls, value):
+        value = value.strip()
+        if not value:
+            return value
+        parsed = urlparse(value)
+        if parsed.scheme != 'https' or parsed.hostname not in ('www.roblox.com', 'roblox.com'):
+            raise ValueError('Use um link HTTPS do Roblox')
+        if not ((parsed.path.rstrip('/') == '/share' and parse_qs(parsed.query).get('code'))
+                or (parsed.path.startswith('/games/') and ('privateServerLinkCode=' in parsed.query or 'linkCode=' in parsed.query))):
+            raise ValueError('Informe um link de convite para servidor privado do Roblox')
+        return value
 
 def read_pix(db, gid):
     obj=db.get(GuildPix,gid)

@@ -641,15 +641,15 @@ class StaffActionSelect(discord.ui.Select):
             return await interaction.response.send_modal(DeliveryProofModal(self.ticket_view))
         if action in ('approved','rejected'):
             order,buyer=await self.ticket_view.get_order(interaction)
-            expected='approved' if action=='delivered' else 'payment_review'
-            if order['status']!=expected:
+            expected=('awaiting_payment', 'payment_review')
+            if order['status'] not in expected:
                 return await interaction.response.send_message('A situação do pedido mudou. Atualize a mensagem.',ephemeral=True)
             await interaction.response.send_message(
                 f'Confirma **{ {"approved":"aprovar o pagamento","rejected":"rejeitar o pagamento","delivered":"marcar como entregue"}[action] }** do pedido de <@{buyer}>?',
                 view=ConfirmAction(self.ticket_view,action,order['id'],interaction.user.id),ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none())
         elif action=='link':
-            await interaction.response.send_modal(PrivateServerModal(self.ticket_view))
+            await self.ticket_view.send_saved_private_server(interaction)
         elif action=='notify':
             order,buyer=await self.ticket_view.get_order(interaction)
             if order['status']!='approved':
@@ -764,6 +764,34 @@ class OrderTicketView(discord.ui.View):
             return bool(role and any(str(r.id)==str(role) for r in interaction.user.roles))
         except httpx.HTTPError:return False
 
+    async def send_saved_private_server(self, interaction):
+        # Responder imediatamente; buscar dados e publicar pode levar mais de 3 segundos.
+        await interaction.response.defer(ephemeral=True)
+        try:
+            order, buyer = await self.get_order(interaction)
+            if order['status'] != 'approved':
+                return await interaction.followup.send('O pagamento ainda não foi aprovado.', ephemeral=True)
+            settings = await self.shop.fetch_pix(interaction.guild_id)
+            url = (settings.get('private_server_url') or '').strip()
+            parsed = urlparse(url)
+            if parsed.scheme != 'https' or parsed.hostname not in ('www.roblox.com', 'roblox.com') or not url:
+                return await interaction.followup.send('Cadastre primeiro o link do servidor privado no painel web, em Configuração Pix.', ephemeral=True)
+            embed = discord.Embed(
+                title='🎮 Servidor privado • Store Control',
+                description=('• Entre no nosso servidor VIP pelo botão abaixo.\n'
+                             '• Ao entrar, avise a equipe neste ticket e aguarde a entrega dos seus produtos.'),
+                color=0xD6B37A)
+            embed.add_field(name='Link do servidor', value=f'[Abrir servidor privado]({url})', inline=False)
+            embed.set_footer(text='Store Control • Entrega manual')
+            view = discord.ui.View(timeout=None)
+            view.add_item(discord.ui.Button(label='Entrar no Servidor', url=url))
+            await interaction.channel.send(content=f'<@{buyer}>', embed=embed, view=view,
+                                           allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+            await interaction.followup.send('Link salvo enviado ao comprador.', ephemeral=True)
+        except (ValueError, httpx.HTTPError, discord.HTTPException):
+            LOG.exception('Erro ao enviar servidor privado salvo')
+            await interaction.followup.send('Não foi possível enviar o link. Verifique as configurações.', ephemeral=True)
+
     async def paid(self,interaction):
         await interaction.response.defer(ephemeral=True)
         try:
@@ -808,8 +836,8 @@ class OrderTicketView(discord.ui.View):
             order, buyer = await self.get_order(interaction)
             if expected_id and order['id'] != expected_id:
                 return await interaction.followup.send('O pedido foi alterado.', ephemeral=True)
-            expected = 'approved' if status == 'delivered' else 'payment_review'
-            if order['status'] != expected:
+            expected = ('approved',) if status == 'delivered' else ('awaiting_payment', 'payment_review')
+            if order['status'] not in expected:
                 return await interaction.followup.send('Pedido já atualizado por outro funcionário.', ephemeral=True)
             async with httpx.AsyncClient(timeout=15) as http:
                 r = await http.post(
