@@ -58,6 +58,38 @@ class CartState:
         self.selected_id = None
 
 
+def apply_message_template(embed, template, variables=None):
+    """Apply only explicitly saved non-empty fields, preserving required order data."""
+    if not isinstance(template, dict):
+        return embed
+    variables = variables or {}
+    def render(value):
+        text = str(value or '')
+        for key, replacement in variables.items():
+            text = text.replace('{' + key + '}', str(replacement))
+        return text
+    if template.get('title'):
+        embed.title = render(template['title'])[:256]
+    if template.get('description'):
+        # Keep mandatory product/total data unless template explicitly references it.
+        description = render(template['description'])
+        if '{produto}' not in str(template['description']) and embed.description:
+            description += '\n\n' + embed.description
+        embed.description = description[:4096]
+    if template.get('footer'):
+        embed.set_footer(text=render(template['footer'])[:2048])
+    if template.get('color'):
+        try:
+            embed.color = discord.Color(int(str(template['color']).lstrip('#'), 16))
+        except ValueError:
+            pass
+    if template.get('thumbnail'):
+        embed.set_thumbnail(url=template['thumbnail'])
+    if template.get('image') and not (embed.image and embed.image.url and embed.image.url.startswith('attachment://')):
+        embed.set_image(url=template['image'])
+    return embed
+
+
 class Shop:
     def __init__(self, client, tree, api_url, key):
         self.client = client
@@ -75,6 +107,19 @@ class Shop:
             r.raise_for_status()
             return r.json()
 
+    async def fetch_message_templates(self, guild_id):
+        """Templates are scoped to the authenticated guild; failure preserves defaults."""
+        try:
+            async with httpx.AsyncClient(timeout=7) as http:
+                r = await http.get(
+                    f'{self.api_url}/api/bot/guilds/{guild_id}/message-templates',
+                    headers={'X-Bot-Key': self.key})
+                r.raise_for_status()
+                return r.json().get('templates') or {}
+        except (httpx.HTTPError, ValueError, TypeError):
+            LOG.warning('Modelos indisponiveis no servidor %s; usando embeds padrao', guild_id)
+            return {}
+
     async def fetch_pix(self,guild_id):
         async with httpx.AsyncClient(timeout=12) as http:
             r=await http.get(f'{self.api_url}/api/bot/guilds/{guild_id}/pix',headers={'X-Bot-Key':self.key})
@@ -91,7 +136,10 @@ class Shop:
         if cart.message_id is None:
             raise RuntimeError('Mensagem principal do carrinho não encontrada')
         message = await channel.fetch_message(cart.message_id)
-        await message.edit(embed=self.cart_embed(cart, data), view=CartView(self, cart, data))
+        embed = self.cart_embed(cart, data)
+        templates = await self.fetch_message_templates(cart.guild_id)
+        apply_message_template(embed, templates.get('cart'), {'cliente': f'<@{cart.owner_id}>'})
+        await message.edit(embed=embed, view=CartView(self, cart, data))
 
     def install_command(self):
         @self.tree.command(name='sincronizar_cargos', description='Sincroniza os cargos de compras dos clientes com pedidos entregues')
@@ -515,6 +563,13 @@ class CartView(discord.ui.View):
                 if role:
                     await channel.set_permissions(role, view_channel=True, send_messages=True, read_message_history=True, reason='Equipe de entregas Store Control')
                 embed=order_embed(order)
+                templates = await self.shop.fetch_message_templates(self.cart.guild_id)
+                apply_message_template(embed, templates.get('order'), {
+                    'cliente': interaction.user.mention,
+                    'valor': str(order.get('total', '')),
+                    'pedido': str(order.get('id', '')),
+                    'produto': ', '.join(str(x.get('name', '')) for x in order.get('items', [])),
+                })
                 qr_file=None
                 if pix.get('key'):
                     code=pix_code(pix['key'],pix['name'],pix['city'],order['total'])
@@ -1044,6 +1099,13 @@ class OrderTicketView(discord.ui.View):
             if user is not None:
                 embed.set_thumbnail(url=user.display_avatar.url)
             embed.set_footer(text='Agradecemos pela sua preferência!')
+            templates = await self.shop.fetch_message_templates(interaction.guild_id)
+            apply_message_template(embed, templates.get('delivery'), {
+                'cliente': f'<@{buyer}>{role_text}',
+                'valor': total,
+                'pedido': str(order.get('id', '')),
+                'produto': products,
+            })
 
             files = [await attachment.to_file() for attachment in proofs] if proofs else []
             await channel.send(

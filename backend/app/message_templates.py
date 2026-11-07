@@ -26,6 +26,16 @@ class Template(BaseModel):
 class Payload(BaseModel):
     templates: dict[str, Template]
 
+# Read-only bot endpoint, authenticated with the existing internal key.
+from .loyalty import require_key
+from .orders_api import validate_guild
+
+@router.get('/api/bot/guilds/{guild_id}/message-templates', dependencies=[Depends(require_key)])
+def bot_message_templates(guild_id: str, db: Session = Depends(get_db)):
+    validate_guild(guild_id)
+    row = db.get(GuildMessageTemplates, guild_id)
+    return {'templates': row.templates if row else {}}
+
 @router.get('/api/store/message-templates')
 async def get_templates(request: Request, db: Session = Depends(get_db)):
     guild_id = await authorize(request)
