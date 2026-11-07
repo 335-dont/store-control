@@ -14,12 +14,14 @@ from .models import Catalog, Product
 from .auth import router as auth_router, session_user
 from .store import router as store_router
 from .bot_stock import router as bot_stock_router
+from .orders_api import router as orders_router
 
 app = FastAPI(title='Store Control API', version='0.2.0', docs_url=None if os.getenv('APP_ENV') == 'production' else '/docs', redoc_url=None if os.getenv('APP_ENV') == 'production' else '/redoc', openapi_url=None if os.getenv('APP_ENV') == 'production' else '/openapi.json')
 
 app.include_router(auth_router)
 app.include_router(store_router)
 app.include_router(bot_stock_router)
+app.include_router(orders_router)
 
 @app.middleware('http')
 async def protect_api(request: Request, call_next):
