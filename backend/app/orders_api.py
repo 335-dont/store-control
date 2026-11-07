@@ -164,7 +164,7 @@ def read_order(guild_id: str, order_id: str, db: Session = Depends(get_db)):
 def change_status(guild_id: str, order_id: str, payload: ChangeStatus, db: Session = Depends(get_db)):
     """Operação interna: bot deve validar o papel do usuário antes de chamar."""
     validate_guild(guild_id)
-    allowed = {'awaiting_payment': {'payment_review', 'cancelled'},
+    allowed = {'awaiting_payment': {'payment_review', 'approved', 'rejected', 'cancelled'},
                'payment_review': {'approved', 'rejected'},
                'approved': {'delivered'}}
     try:
@@ -174,6 +174,11 @@ def change_status(guild_id: str, order_id: str, payload: ChangeStatus, db: Sessi
             GuildOrder.id == order_id, GuildOrder.guild_id == guild_id).with_for_update())
         if not order:
             raise HTTPException(404, 'Pedido não encontrado')
+        # A confirmação do staff independe do botão 'Já paguei'.
+        # Aprovação repetida é idempotente para recuperar uma embed perdida.
+        if payload.status == 'approved' and order.status == 'approved':
+            db.commit()
+            return output(order)
         if payload.status not in allowed.get(order.status, set()):
             raise HTTPException(409, 'Transição de status inválida')
         if payload.status in {'cancelled', 'rejected'}:

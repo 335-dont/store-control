@@ -777,14 +777,15 @@ class OrderTicketView(discord.ui.View):
             if parsed.scheme != 'https' or parsed.hostname not in ('www.roblox.com', 'roblox.com') or not url:
                 return await interaction.followup.send('Cadastre primeiro o link do servidor privado no painel web, em Configuração Pix.', ephemeral=True)
             embed = discord.Embed(
-                title='🎮 Servidor privado • Store Control',
-                description=('• Entre no nosso servidor VIP pelo botão abaixo.\n'
-                             '• Ao entrar, avise a equipe neste ticket e aguarde a entrega dos seus produtos.'),
+                title='Store Control',
+                description=('• Entre em um de nossos servidores VIP abaixo\n'
+                             '• Ao entrar em nosso servidor, avise o entregador neste canal '
+                             'e aguarde seu produto ser entregue!\n\n'
+                             f'> {url}'),
                 color=0xD6B37A)
-            embed.add_field(name='Link do servidor privado', value=url, inline=False)
-            embed.set_footer(text='Store Control • Entrega manual')
+            embed.set_footer(text=f'Store Control © {datetime.now(timezone.utc).year} • Entrega manual')
             view = discord.ui.View(timeout=None)
-            view.add_item(discord.ui.Button(label='Entrar no Servidor', url=url))
+            view.add_item(discord.ui.Button(label='Entrar no Servidor', emoji='🔰', url=url))
             await interaction.channel.send(content=f'<@{buyer}>', embed=embed, view=view,
                                            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
             await interaction.followup.send('Link salvo enviado ao comprador.', ephemeral=True)
@@ -838,13 +839,28 @@ class OrderTicketView(discord.ui.View):
                 return await interaction.followup.send('O pedido foi alterado.', ephemeral=True)
             expected = ('approved',) if status == 'delivered' else ('awaiting_payment', 'payment_review')
             if order['status'] not in expected:
-                return await interaction.followup.send('Pedido já atualizado por outro funcionário.', ephemeral=True)
+                if status == 'approved' and order['status'] == 'approved':
+                    await interaction.followup.send('Pagamento já aprovado. Restaurando a mensagem.', ephemeral=True)
+                    await self.publish_approved(interaction.channel, order, buyer)
+                    return
+                return await interaction.followup.send(f'Pedido em situação {order["status"]}; ação indisponível.', ephemeral=True)
             async with httpx.AsyncClient(timeout=15) as http:
                 r = await http.post(
                     f'{self.shop.api_url}/api/bot/guilds/{interaction.guild_id}/orders/{order["id"]}/status',
                     headers={'X-Bot-Key': self.shop.key}, json={'status': status})
             if r.status_code == 409:
-                return await interaction.followup.send('Outro funcionário já processou este pedido.', ephemeral=True)
+                # Pode ser uma versão antiga da API no Railway ou uma ação concorrente.
+                # Consultar o estado real evita acusar outro funcionário indevidamente.
+                latest, _ = await self.get_order(interaction)
+                if status == 'approved' and latest['status'] == 'approved':
+                    await interaction.followup.send('Pagamento já aprovado. Recuperando a mensagem de entrega.', ephemeral=True)
+                    await self.publish_approved(interaction.channel, latest, buyer)
+                    return
+                detail = r.text[:350]
+                LOG.warning('Transição recusada: pedido=%s atual=%s destino=%s resposta=%s', order['id'], latest['status'], status, detail)
+                return await interaction.followup.send(
+                    f'Não foi possível {"aprovar" if status == "approved" else "atualizar"} o pedido (status atual: {latest["status"]}). '
+                    'Confirme que o backend da Etapa 4.4F foi publicado no Railway.', ephemeral=True)
             r.raise_for_status()
             updated = r.json()
             # Nunca bloquear a resposta do funcionário aguardando PATCH de canal (429).
@@ -895,15 +911,30 @@ class OrderTicketView(discord.ui.View):
             except (discord.Forbidden, discord.HTTPException):
                 LOG.exception('Não foi possível concluir a limpeza do ticket %s', channel.id)
                 failed += 1
-        embed = order_embed(order)
-        embed.title = '✅ Compra Confirmada'
-        embed.description = (embed.description or '') + (
-            '\n\n**Entrega**\nUm entregador enviará as instruções neste canal. '
-            'Aguarde o atendimento para receber seus produtos.')
-        embed.add_field(name='Comprador', value=f'<@{buyer}>', inline=False)
-        embed.set_footer(text='Store Control • Compra confirmada')
+        # Embed própria da fase de entrega, sem Pix/QR e sem campos técnicos.
+        lines = [f"• 📦 **{item['name']}** ({item['quantity']}x) — "
+                 f"{reais(Decimal(item['unit_price_cents']) * item['quantity'] / 100)}"
+                 for item in order.get('items', [])]
+        embed = discord.Embed(
+            title='Compra Confirmada',
+            description=('✅ Um dos produtos que você adquiriu possui entrega manual. '
+                         'Basta aguardar um de nossos entregadores para receber sua compra.\n\n'
+                         '**🛍️ Produtos Adquiridos**\n' + ('\n'.join(lines) or 'Nenhum produto') +
+                         f'\n\n**💰 Total:** R$ {order["total"].replace(".", ",")}\n\n'
+                         f'**👤 Comprador**\n<@{buyer}>\n\n'
+                         '**📦 Entrega**\nAssim que um entregador assumir seu pedido, '
+                         'ele enviará uma mensagem neste canal e realizará a entrega.'),
+            color=0xD6B37A)
+        embed.set_footer(text=f'Store Control © {datetime.now(timezone.utc).year}')
         try:
             await channel.send(embed=embed, view=OrderTicketView(self.shop, approved=True))
+            # Renomear somente se necessário, para reduzir PATCHs e rate limits.
+            desired_name = channel_name('approved', channel.name.split('-', 1)[-1])
+            if not channel.name.startswith('🟢'):
+                try:
+                    await channel.edit(name=desired_name, reason='Pagamento aprovado')
+                except discord.HTTPException:
+                    LOG.warning('Canal %s aprovado, mas renomeação foi limitada pelo Discord', channel.id)
             LOG.info('Pedido %s aprovado: %s mensagens removidas, %s falhas', order['id'], removed, failed)
         except discord.HTTPException:
             LOG.exception('Falha ao publicar embed de entrega no ticket %s', channel.id)
