@@ -507,6 +507,22 @@ class CartView(discord.ui.View):
                 menu.callback = self.quantity_selected
                 self.add_item(menu)
             self.button('Voltar ao Carrinho', 'sc43:quantity-back', self.summary, row=1)
+        # Botao presente em todas as etapas: categorias, produtos, edicao e quantidade.
+        self.button('Fechar Carrinho', 'sc43:close-cart', self.close_cart, row=3)
+
+    async def close_cart(self, interaction):
+        # A verificacao de proprietario e feita por interaction_check.
+        # O carrinho ainda nao e um pedido; nao ha estoque reservado para liberar.
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+        try:
+            await channel.delete(reason=f'Carrinho fechado pelo cliente {interaction.user.id}')
+        except discord.HTTPException:
+            await interaction.followup.send(
+                'Nao foi possivel fechar o carrinho. Verifique a permissao Gerenciar Canais do bot.',
+                ephemeral=True)
+            return
+        self.shop.carts.pop(channel.id, None)
 
     def button(self, label, custom_id, callback, row):
         button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary,
