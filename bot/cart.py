@@ -157,8 +157,16 @@ class Shop:
         @app_commands.guild_only()
         @app_commands.default_permissions(manage_guild=True)
         async def publicar_loja(interaction: discord.Interaction):
-            if not interaction.user.guild_permissions.manage_guild:
-                return await interaction.response.send_message('Apenas administradores podem publicar a loja.', ephemeral=True)
+            guild = interaction.guild
+            permissions = getattr(interaction.user, 'guild_permissions', None)
+            is_owner = bool(guild and interaction.user.id == guild.owner_id)
+            is_admin = bool(permissions and permissions.administrator)
+            can_manage = bool(permissions and permissions.manage_guild)
+            if not (is_owner or is_admin or can_manage):
+                return await interaction.response.send_message(
+                    'Apenas o proprietário do servidor ou membros com Administrador/Gerenciar Servidor podem publicar a loja.',
+                    ephemeral=True
+                )
             # Atualiza o painel público já existente, sem criar mensagens duplicadas.
             embed = discord.Embed(title='🛒 Loja MM2', description='Escolha uma opção abaixo para começar.', color=0xC3A06B)
             templates = await self.fetch_message_templates(interaction.guild_id)
