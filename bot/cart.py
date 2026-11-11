@@ -383,7 +383,7 @@ class ShopPanel(discord.ui.View):
     async def history(self, interaction, button):
         await interaction.response.send_message('O histórico estará disponível na etapa de pedidos.', ephemeral=True)
 
-    @discord.ui.button(label='Visualizar Estoque da Loja', emoji='📦', style=discord.ButtonStyle.secondary, custom_id='sc42:stock')
+    @discord.ui.button(label='Visualizar Estoque da Loja', emoji='📦', style=discord.ButtonStyle.secondary, custom_id='sc42:stock', row=1)
     async def view_stock(self, interaction, button):
         await interaction.response.defer(ephemeral=True)
         try:
