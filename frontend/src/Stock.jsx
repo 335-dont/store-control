@@ -5,7 +5,7 @@ import {useStore,setStoreData,loadStore} from './StoreContext.jsx';
 const KEY='store-control-catalogs-v3', LOG='store-control-stock-log-v1';
 const read=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))||fallback}catch{return fallback}};
 const cash=n=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(n||0);
-const emoji=v=>/^https:\/\//.test(v||'')?<img src={v} alt="" className="stock-emoji-img"/>:<span>{v||'📦'}</span>;
+const emoji=v=>{const m=String(v||'').match(/^<a?:[a-zA-Z0-9_]{2,32}:(\d{15,22})>$/);const url=m?`https://cdn.discordapp.com/emojis/${m[1]}.${String(v).startsWith('<a:')?'gif':'png'}`:/^https:\/\//.test(v||'')?v:null;return url?<img src={url} alt="" className="stock-emoji-img"/>:<span>{v||'📦'}</span>};
 export default function Stock({notify}){
  const store=useStore(); const data=store.data; const setData=setStoreData;const [logs,setLogs]=useState(()=>read(LOG,[]));const [search,setSearch]=useState('');const [catalog,setCatalog]=useState('all');const [filter,setFilter]=useState('all');const [dialog,setDialog]=useState(null);const [delta,setDelta]=useState('');const [reason,setReason]=useState('Reposição');const [note,setNote]=useState('');const [history,setHistory]=useState(false);
  const refresh=()=>{};

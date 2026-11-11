@@ -18,6 +18,7 @@ from .orders_api import router as orders_router
 from .pix_settings import router as pix_router
 from .loyalty import router as loyalty_router
 from .message_templates import router as message_templates_router
+from .emoji_api import router as emoji_router
 
 app = FastAPI(title='Store Control API', version='0.2.0', docs_url=None if os.getenv('APP_ENV') == 'production' else '/docs', redoc_url=None if os.getenv('APP_ENV') == 'production' else '/redoc', openapi_url=None if os.getenv('APP_ENV') == 'production' else '/openapi.json')
 
@@ -28,6 +29,7 @@ app.include_router(orders_router)
 app.include_router(pix_router)
 app.include_router(loyalty_router)
 app.include_router(message_templates_router)
+app.include_router(emoji_router)
 
 @app.middleware('http')
 async def protect_api(request: Request, call_next):
