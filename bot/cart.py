@@ -187,6 +187,35 @@ class Shop:
             except discord.HTTPException:
                 await interaction.response.send_message('Não consegui publicar ou atualizar. Verifique minhas permissões.', ephemeral=True)
 
+    async def process_panel_updates(self):
+        async with httpx.AsyncClient(timeout=12) as http:
+            r=await http.get(f'{self.api_url}/api/bot/panel-updates',headers={'X-Bot-Key':self.key})
+            r.raise_for_status()
+            jobs=r.json().get('jobs',[])
+        for job in jobs:
+            guild_id=job['guild_id'];status='error';detail='Falha ao atualizar'
+            try:
+                guild=self.client.get_guild(int(guild_id))
+                if guild is None:raise ValueError('Bot nao esta neste servidor')
+                channel=guild.get_channel(int(job['channel_id']))
+                if not isinstance(channel,discord.TextChannel):raise ValueError('Canal nao encontrado')
+                msg=await channel.fetch_message(int(job['message_id']))
+                if msg.author.id!=self.client.user.id:raise ValueError('Mensagem nao pertence ao bot')
+                if not any(getattr(c,'custom_id',None)=='sc42:buy' for row in msg.components for c in getattr(row,'children',[])):
+                    raise ValueError('Mensagem nao e o painel publico de compras')
+                embed=discord.Embed(title='🛒 Loja MM2',description='Escolha uma opcao abaixo para comecar.',color=0x167bff)
+                templates=await self.fetch_message_templates(guild.id)
+                tpl=templates.get('shop')
+                if isinstance(tpl,dict) and tpl.get('description'):embed.description=None
+                apply_message_template(embed,tpl)
+                await msg.edit(embed=embed,view=ShopPanel(self))
+                status='done';detail='Painel atualizado no Discord'
+            except (ValueError,discord.HTTPException,httpx.HTTPError) as exc:
+                detail=str(exc)[:230]
+                LOG.warning('Falha ao atualizar painel: %s',detail)
+            async with httpx.AsyncClient(timeout=12) as http:
+                await http.post(f'{self.api_url}/api/bot/panel-updates/{guild_id}/result',headers={'X-Bot-Key':self.key},json={'status':status,'detail':detail})
+
     async def restore(self):
         # Reagenda fechamentos pendentes após reinício do processo.
         for guild in self.client.guilds:

@@ -65,6 +65,15 @@ async def estoque(interaction: discord.Interaction):
 async def on_ready():
     logging.info('Bot conectado como %s (%s)', client.user, client.user.id)
     await shop.restore()
+    if not getattr(client,'_eleve_task',None) or client._eleve_task.done():
+        client._eleve_task=asyncio.create_task(panel_update_worker())
+
+async def panel_update_worker():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:await shop.process_panel_updates()
+        except (httpx.HTTPError,ValueError):logging.exception('Sincronizacao temporariamente indisponivel')
+        await asyncio.sleep(10)
 
 async def main():
     async with client:

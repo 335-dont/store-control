@@ -23,3 +23,5 @@
 .profile-error{font-size:12px;line-height:1.5;margin:12px 0;overflow-wrap:anywhere}
 .profile-error p{margin:0 0 8px}
 @media(max-width:600px){.guild-select{font-size:16px}.profile-menu{right:0}}
+
+:root{--blue:#167bff;--chart:#16a5f9;--selected:#172c49;--hover:#202a3b}:root[data-theme=light]{--blue:#167bff;--chart:#16a5f9;--selected:#e8f3ff;--hover:#edf5ff}.eleve-logo{width:27px;height:27px;object-fit:cover;border-radius:8px}.navitem.active{box-shadow:inset 3px 0 var(--blue)}

@@ -58,3 +58,57 @@ async def put_templates(request: Request, payload: Payload, db: Session = Depend
     else: db.add(GuildMessageTemplates(guild_id=guild_id, templates=data))
     db.commit()
     return {'templates': data}
+
+
+from datetime import datetime, timezone
+from .loyalty import require_key
+class PanelUpdate(Base):
+    __tablename__='discord_panel_updates'
+    guild_id: Mapped[str] = mapped_column(String(32),primary_key=True)
+    channel_id: Mapped[str] = mapped_column(String(32))
+    message_id: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(24),default='pending')
+    detail: Mapped[str] = mapped_column(String(250),default='')
+
+class PanelTarget(BaseModel):
+    channel_id: str = Field(pattern=r'^\d{17,22}$')
+    message_id: str = Field(pattern=r'^\d{17,22}$')
+
+@router.post('/api/store/panel-update')
+async def request_panel_update(request:Request,payload:PanelTarget,db:Session=Depends(get_db)):
+    require_same_origin(request)
+    guild_id=await authorize(request)
+    if db.get(GuildMessageTemplates,guild_id) is None:
+        raise HTTPException(400,'Salve o modelo antes de publicar')
+    row=db.get(PanelUpdate,guild_id)
+    if row is None:
+        row=PanelUpdate(guild_id=guild_id,channel_id=payload.channel_id,message_id=payload.message_id,status='pending',detail='')
+        db.add(row)
+    else:
+        row.channel_id=payload.channel_id;row.message_id=payload.message_id;row.status='pending';row.detail=''
+    db.commit()
+    return {'status':'pending'}
+
+@router.get('/api/store/panel-update')
+async def get_panel_update(request:Request,db:Session=Depends(get_db)):
+    guild_id=await authorize(request)
+    row=db.get(PanelUpdate,guild_id)
+    return {'status':row.status,'detail':row.detail} if row else {'status':'idle','detail':''}
+
+@router.get('/api/bot/panel-updates',dependencies=[Depends(require_key)])
+def pending_updates(db:Session=Depends(get_db)):
+    rows=db.query(PanelUpdate).filter(PanelUpdate.status=='pending').limit(20).all()
+    return {'jobs':[{'guild_id':r.guild_id,'channel_id':r.channel_id,'message_id':r.message_id} for r in rows]}
+
+class PanelResult(BaseModel):
+    status:str
+    detail:str=''
+
+@router.post('/api/bot/panel-updates/{guild_id}/result',dependencies=[Depends(require_key)])
+def update_result(guild_id:str,payload:PanelResult,db:Session=Depends(get_db)):
+    row=db.get(PanelUpdate,guild_id)
+    if row is None:raise HTTPException(404,'Nao encontrado')
+    if payload.status not in ('done','error'):raise HTTPException(422,'Status invalido')
+    row.status=payload.status;row.detail=payload.detail[:250];db.commit()
+    return {'ok':True}
+

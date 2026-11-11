@@ -19,13 +19,28 @@ const DEFAULTS={
 };
 const initial=(kind)=>({...BASE,...DEFAULTS[kind]});
 export default function MessageEditor({notify}){
- const [guild,setGuild]=useState(''),[templates,setTemplates]=useState({}),[kind,setKind]=useState('cart'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[saved,setSaved]=useState(false);
+ const [channelId,setChannelId]=useState(''),[messageId,setMessageId]=useState(''),[publishStatus,setPublishStatus]=useState(''),[guild,setGuild]=useState(''),[templates,setTemplates]=useState({}),[kind,setKind]=useState('cart'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[saved,setSaved]=useState(false);
  const item=useMemo(()=>({...initial(kind),...templates[kind]}),[templates,kind]);
  const change=(key,value)=>{setSaved(false);setTemplates(old=>({...old,[kind]:{...initial(kind),...old[kind],[key]:value}}))};
  const get=async(url,id,opts={})=>{const r=await fetch(url,{credentials:'same-origin',headers:{'X-Store-Guild':id,...(opts.body?{'Content-Type':'application/json'}:{})},...opts});const d=await r.json();if(!r.ok)throw Error(d.detail||`HTTP ${r.status}`);return d};
  const load=async()=>{setBusy(true);setError('');try{const r=await fetch('/auth/selected-guild',{credentials:'same-origin'});const d=await r.json();if(!r.ok)throw Error(d.detail||'Faça login');const id=d.selected_guild_id||'';setGuild(id);if(!id){setTemplates({});setError('Selecione um servidor no perfil Discord');return}const t=await get('/api/store/message-templates',id);setTemplates(t.templates||{});setSaved(true)}catch(e){setError(e.message)}finally{setBusy(false)}};
  useEffect(()=>{load();window.addEventListener('store-guild-changed',load);return()=>window.removeEventListener('store-guild-changed',load)},[]);
  const save=async()=>{if(!guild)return;setBusy(true);setError('');try{const result=await get('/api/store/message-templates',guild,{method:'PUT',body:JSON.stringify({templates})});const check=await get('/api/store/message-templates',guild);if(JSON.stringify(result.templates)!==JSON.stringify(check.templates))throw Error('O banco não confirmou o salvamento');setTemplates(check.templates);setSaved(true);notify?.('Modelos salvos no banco de dados')}catch(e){setError('Não foi possível salvar: '+e.message)}finally{setBusy(false)}};
+ const publish=async()=>{
+   if(!/^\d{17,22}$/.test(channelId)||!/^\d{17,22}$/.test(messageId)){setError('Informe os IDs numericos do canal e da mensagem');return}
+   if(!saved){setError('Salve suas alteracoes antes de atualizar');return}
+   setBusy(true);setError('');setPublishStatus('Solicitacao enviada ao bot…');
+   try{
+     await get('/api/store/panel-update',guild,{method:'POST',body:JSON.stringify({channel_id:channelId,message_id:messageId})});
+     for(let i=0;i<12;i++){
+       await new Promise(resolve=>setTimeout(resolve,1500));
+       const result=await get('/api/store/panel-update',guild);
+       if(result.status==='done'){setPublishStatus('Painel atualizado no Discord!');notify?.('Painel atualizado');return}
+       if(result.status==='error')throw Error(result.detail||'Falha ao atualizar');
+     }
+     setPublishStatus('Bot ainda processando. Confira novamente em instantes.');
+   }catch(e){setError('Falha na publicacao: '+e.message);setPublishStatus('')}finally{setBusy(false)}
+ };
  const field=(label,key,multi=false,placeholder='')=><label className="msg-field"><span>{label}</span>{multi?<textarea rows={5} value={item[key]} placeholder={placeholder} onChange={e=>change(key,e.target.value)}/>:<input value={item[key]} placeholder={placeholder} onChange={e=>change(key,e.target.value)}/>}</label>;
  const preview=v=>(v||'').replaceAll('{cliente}','@cliente · @+100$').replaceAll('{valor}','R$ 100,00').replaceAll('{pedido}','1234').replaceAll('{produto}','🔪 Heartblade ×2 — R$ 16,00');
  return <div className="msg-editor"><section className="card msg-editor-card"><div className="msg-header"><div><div className="msg-eyebrow">PERSONALIZAÇÃO DO DISCORD</div><h2>Mensagens e embeds</h2><p>Edite os modelos de cada setor com uma prévia visual.</p></div><span className="msg-status">{saved?'Salvo no banco':'Alterações não salvas'}</span></div>
@@ -35,6 +50,7 @@ export default function MessageEditor({notify}){
  <div className="msg-vars"><span>Variáveis disponíveis:</span>{['{cliente}','{valor}','{pedido}','{produto}'].map(x=><button key={x} type="button" title="Copiar variável" onClick={()=>navigator.clipboard?.writeText(x)}>{x}</button>)}</div>
  <div className="msg-two"><label className="msg-field"><span>Cor da embed</span><div className="msg-color"><input type="color" aria-label="Escolher cor" value={/^#[\da-fA-F]{6}$/.test(item.color)?item.color:'#5865F2'} onChange={e=>change('color',e.target.value)}/><input value={item.color} onChange={e=>change('color',e.target.value)} placeholder="#5865F2"/></div></label>{field('Rodapé','footer')}</div>
  {field('Imagem (URL HTTPS)','image',false,'https://...')}{field('Miniatura (URL HTTPS)','thumbnail',false,'https://...')}
+ {kind==='shop'&&<div className="msg-publish"><strong>Atualizar painel no Discord</strong><p>Informe o ID do canal e o ID da mensagem publica ja existente. O bot atualiza sem duplicar.</p><div className="msg-two"><label className="msg-field"><span>ID do canal</span><input value={channelId} onChange={e=>setChannelId(e.target.value.trim())} placeholder="ID do canal"/></label><label className="msg-field"><span>ID da mensagem</span><input value={messageId} onChange={e=>setMessageId(e.target.value.trim())} placeholder="ID da mensagem"/></label></div><button className="pill primary" disabled={busy||!guild||!saved} onClick={publish}>Atualizar no Discord</button>{publishStatus&&<p role="status">{publishStatus}</p>}</div>}
  <div className="msg-actions"><button className="pill" disabled={busy} onClick={()=>{setTemplates(old=>{const next={...old};delete next[kind];return next});setSaved(false)}}>Restaurar modelo inicial</button><button className="pill primary" disabled={busy||!guild} onClick={save}>{busy?'Salvando…':'Salvar mensagens'}</button></div>{error&&<p role="alert" className="msg-error">{error}</p>}</div></section>
  <section className="card msg-preview-card"><div className="msg-header"><div><div className="msg-eyebrow">VISUALIZAÇÃO</div><h2>Prévia da embed</h2><p>Exemplo de como a mensagem pode aparecer no Discord.</p></div></div><div className="msg-preview" style={{borderLeftColor:/^#[\da-fA-F]{6}$/.test(item.color)?item.color:'#5865F2'}}>{item.thumbnail&&<img className="msg-thumbnail" src={item.thumbnail} alt="Miniatura"/>}<strong>{preview(item.title)||'Sem título'}</strong><p>{preview(item.description)||'Sem descrição'}</p>{item.image&&<img className="msg-image" src={item.image} alt="Imagem da embed"/>}{item.footer&&<div className="msg-footer">{preview(item.footer)}</div>}</div>{kind==='shop'&&<div className="msg-shop-buttons"><span>🛒 Comprar MM2</span><span>📜 Histórico de Compras</span><span>📦 Visualizar Estoque</span></div>}<p className="msg-disclaimer">{kind==='shop'?'Salve e execute /publicar_loja no canal público para atualizar o painel. O comando reutiliza o painel encontrado entre as 100 mensagens recentes do canal.':'Modelos salvos são usados nas mensagens já integradas (Carrinho, Resumo e Entregas). Outros setores serão conectados gradualmente.'}</p></section></div>
 }
