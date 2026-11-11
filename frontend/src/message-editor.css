@@ -3,3 +3,5 @@
 .msg-shop-buttons{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.msg-shop-buttons span{background:#34363d;color:#f2f3f5;border:1px solid #494c55;border-radius:6px;padding:8px 11px;font-size:12px;font-weight:600}
 
 .msg-publish{padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--hover);display:grid;gap:12px}.msg-publish p{margin:0;color:var(--muted);font-size:12px;line-height:1.5}.msg-publish .pill{justify-self:start}
+
+.msg-emoji-config{border-top:1px solid var(--border);padding-top:18px;margin-top:16px}.msg-emoji-config h3{margin:0 0 8px}.msg-emoji-config p{color:var(--muted);font-size:13px}.msg-emoji-row{display:flex;align-items:center;gap:12px}.msg-emoji-row select{flex:1;min-width:0}.msg-emoji-sample{display:flex;align-items:center;justify-content:center;width:38px;height:38px;font-size:23px}.msg-emoji-sample img{width:28px;height:28px;object-fit:contain}

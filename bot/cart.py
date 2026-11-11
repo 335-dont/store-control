@@ -90,6 +90,57 @@ def apply_message_template(embed, template, variables=None):
     return embed
 
 
+# Emojis configuráveis por servidor; códigos <:nome:id> são emojis da aplicação.
+EMOJI_DEFAULTS = {
+    'confirmed_notice': '✅', 'confirmed_products': '🛍️', 'confirmed_item': '📦',
+    'confirmed_total': '💰', 'confirmed_buyer': '👤', 'confirmed_delivery': '📦',
+    'staff_link': '🔗', 'staff_notify': '🔔', 'staff_delivered': '📦',
+    'staff_approve': '✅', 'staff_reject': '❌', 'private_button': '🔰',
+    'private_title': '🎮', 'ticket_copy': '🔗', 'ticket_paid': '💳',
+}
+
+def configured_emoji(template, key):
+    value = (template or {}).get('emojis', {}).get(key) if isinstance(template, dict) else None
+    return value or EMOJI_DEFAULTS.get(key, '📦')
+
+def discord_component_emoji(template, key):
+    value = configured_emoji(template, key)
+    try:
+        return discord.PartialEmoji.from_str(value)
+    except (ValueError, TypeError):
+        return None
+
+def render_exact_template(embed, template, variables):
+    """Use a descrição editada sem duplicar dados; preserve dados obrigatórios."""
+    if not isinstance(template, dict):
+        return embed
+    def replace(value):
+        out = str(value)
+        for key, val in variables.items():
+            out = out.replace('{' + key + '}', str(val))
+        for key in EMOJI_DEFAULTS:
+            out = out.replace('{emoji_' + key + '}', configured_emoji(template, key))
+        return out
+    if template.get('title'):
+        embed.title = replace(template['title'])[:256]
+    if template.get('description'):
+        desc = replace(template['description'])
+        # A descrição só substitui a padrão se os dados obrigatórios estiverem presentes.
+        required = ('{produto}', '{valor}', '{cliente}') if 'produto' in variables else ('{link}',)
+        if all(token in template['description'] for token in required):
+            embed.description = desc[:4096]
+        else:
+            embed.description = (desc + '\n\n' + (embed.description or ''))[:4096]
+    if template.get('footer'):
+        embed.set_footer(text=replace(template['footer'])[:2048])
+    if template.get('color'):
+        try: embed.color = discord.Color(int(template['color'].lstrip('#'), 16))
+        except (ValueError, TypeError): pass
+    if template.get('thumbnail'): embed.set_thumbnail(url=template['thumbnail'])
+    if template.get('image'): embed.set_image(url=template['image'])
+    return embed
+
+
 class Shop:
     def __init__(self, client, tree, api_url, key):
         self.client = client
@@ -672,7 +723,7 @@ class CartView(discord.ui.View):
                     embed.add_field(name='Pix',value='Aguardando a equipe configurar a chave Pix no painel web.',inline=False)
                 # Apaga componentes do carrinho e transforma a mensagem em pedido.
                 message=await channel.fetch_message(self.cart.message_id)
-                await message.edit(embed=embed,view=OrderTicketView(self.shop),attachments=[qr_file] if qr_file else [])
+                await message.edit(embed=embed,view=OrderTicketView(self.shop, emoji_template=templates.get('ticket', {})),attachments=[qr_file] if qr_file else [])
                 await channel.edit(name=channel_name('awaiting_payment',interaction.user.name),
                     topic=f'sc-order:{order["id"]};buyer:{self.cart.owner_id}',reason='Pedido aguardando pagamento')
                 self.shop.carts.pop(channel.id,None)
@@ -782,12 +833,12 @@ class StaffActionSelect(discord.ui.Select):
     def __init__(self, view, approved=False):
         self.ticket_view = view
         options = ([
-            discord.SelectOption(label='Enviar link do servidor privado', value='link', emoji='🔗'),
-            discord.SelectOption(label='Notificar cliente', value='notify', emoji='🔔'),
-            discord.SelectOption(label='Produto entregue', value='delivered', emoji='📦'),
+            discord.SelectOption(label='Enviar link do servidor privado', value='link', emoji=discord_component_emoji(view.emoji_template, 'staff_link')),
+            discord.SelectOption(label='Notificar cliente', value='notify', emoji=discord_component_emoji(view.emoji_template, 'staff_notify')),
+            discord.SelectOption(label='Produto entregue', value='delivered', emoji=discord_component_emoji(view.emoji_template, 'staff_delivered')),
         ] if approved else [
-            discord.SelectOption(label='Aprovar Pagamento', value='approved', emoji='✅'),
-            discord.SelectOption(label='Rejeitar Pagamento', value='rejected', emoji='❌'),
+            discord.SelectOption(label='Aprovar Pagamento', value='approved', emoji=discord_component_emoji(view.emoji_template, 'staff_approve')),
+            discord.SelectOption(label='Rejeitar Pagamento', value='rejected', emoji=discord_component_emoji(view.emoji_template, 'staff_reject')),
         ])
         super().__init__(placeholder='Ações do Entregador', custom_id='sc44:staff:approved' if approved else 'sc44:staff:payment', options=options, row=0)
 
@@ -890,16 +941,17 @@ class PrivateServerModal(discord.ui.Modal,title='Enviar servidor privado'):
 
 
 class OrderTicketView(discord.ui.View):
-    def __init__(self,shop,approved=False):
+    def __init__(self,shop,approved=False,emoji_template=None):
         super().__init__(timeout=None)
         self.shop=shop
         self.approved=approved
+        self.emoji_template=emoji_template or {}
         self.add_item(StaffActionSelect(self,approved=approved))
         if not approved:
-            copy=discord.ui.Button(label='Copiar e Colar',emoji='🔗',style=discord.ButtonStyle.secondary,custom_id='sc44:copy',row=1)
+            copy=discord.ui.Button(label='Copiar e Colar',emoji=discord_component_emoji(self.emoji_template, 'ticket_copy'),style=discord.ButtonStyle.secondary,custom_id='sc44:copy',row=1)
             copy.callback=self.copy_pix
             self.add_item(copy)
-            paid=discord.ui.Button(label='Já paguei — Chamar Entregadores',emoji='💳',style=discord.ButtonStyle.secondary,custom_id='sc44:paid',row=1)
+            paid=discord.ui.Button(label='Já paguei — Chamar Entregadores',emoji=discord_component_emoji(self.emoji_template, 'ticket_paid'),style=discord.ButtonStyle.secondary,custom_id='sc44:paid',row=1)
             paid.callback=self.paid
             self.add_item(paid)
 
@@ -941,12 +993,20 @@ class OrderTicketView(discord.ui.View):
                              'e aguarde seu produto ser entregue!\n\n'
                              f'> {url}'),
                 color=0xD6B37A)
+            templates = await self.shop.fetch_message_templates(interaction.guild_id)
+            private_template = templates.get('private_server', {})
+            render_exact_template(embed, private_template, {
+                'cliente': f'<@{buyer}>', 'link': url,
+                'pedido': str(order.get('id', '')),
+            })
             # Foto do funcionário que enviou o link, como na referência.
             # display_avatar funciona tanto com avatar personalizado quanto com o padrão.
-            embed.set_thumbnail(url=interaction.user.display_avatar.url)
-            embed.set_footer(text=f'Store Control © {datetime.now(timezone.utc).year} • Entrega manual')
+            if not private_template.get('thumbnail'):
+                embed.set_thumbnail(url=interaction.user.display_avatar.url)
+            if not private_template.get('footer'):
+                embed.set_footer(text=f'Store Control © {datetime.now(timezone.utc).year} • Entrega manual')
             view = discord.ui.View(timeout=None)
-            view.add_item(discord.ui.Button(label='Entrar no Servidor', emoji='🔰', url=url))
+            view.add_item(discord.ui.Button(label='Entrar no Servidor', emoji=discord_component_emoji(private_template, 'private_button'), url=url))
             await interaction.channel.send(content=f'<@{buyer}>', embed=embed, view=view,
                                            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
             await interaction.followup.send('Link salvo enviado ao comprador.', ephemeral=True)
@@ -1076,23 +1136,33 @@ class OrderTicketView(discord.ui.View):
             except (discord.Forbidden, discord.HTTPException):
                 LOG.exception('Não foi possível concluir a limpeza do ticket %s', channel.id)
                 failed += 1
-        # Embed própria da fase de entrega, sem Pix/QR e sem campos técnicos.
-        lines = [f"• 📦 **{item['name']}** ({item['quantity']}x) — "
+        # Mensagem de compra confirmada personalizável por servidor.
+        templates = await self.shop.fetch_message_templates(channel.guild.id)
+        confirmed = templates.get('purchase_confirmed', {})
+        e = lambda key: configured_emoji(confirmed, key)
+        lines = [f"• {e('confirmed_item')} **{item['name']}** ({item['quantity']}x) — "
                  f"{reais(Decimal(item['unit_price_cents']) * item['quantity'] / 100)}"
                  for item in order.get('items', [])]
+        products_text = '\n'.join(lines) or 'Nenhum produto'
+        total_text = f"R$ {order['total'].replace('.', ',')}"
+        buyer_text = f'<@{buyer}>'
         embed = discord.Embed(
             title='Compra Confirmada',
-            description=('✅ Um dos produtos que você adquiriu possui entrega manual. '
+            description=(f"{e('confirmed_notice')} Um dos produtos que você adquiriu possui entrega manual. "
                          'Basta aguardar um de nossos entregadores para receber sua compra.\n\n'
-                         '**🛍️ Produtos Adquiridos**\n' + ('\n'.join(lines) or 'Nenhum produto') +
-                         f'\n\n**💰 Total:** R$ {order["total"].replace(".", ",")}\n\n'
-                         f'**👤 Comprador**\n<@{buyer}>\n\n'
-                         '**📦 Entrega**\nAssim que um entregador assumir seu pedido, '
+                         f"**{e('confirmed_products')} Produtos Adquiridos**\n" + products_text +
+                         f"\n\n**{e('confirmed_total')} Total:** {total_text}\n\n"
+                         f"**{e('confirmed_buyer')} Comprador**\n{buyer_text}\n\n"
+                         f"**{e('confirmed_delivery')} Entrega**\nAssim que um entregador assumir seu pedido, "
                          'ele enviará uma mensagem neste canal e realizará a entrega.'),
             color=0xD6B37A)
         embed.set_footer(text=f'Store Control © {datetime.now(timezone.utc).year}')
+        render_exact_template(embed, confirmed, {
+            'produto': products_text, 'valor': total_text, 'cliente': buyer_text,
+            'pedido': str(order.get('id', '')),
+        })
         try:
-            await channel.send(embed=embed, view=OrderTicketView(self.shop, approved=True))
+            await channel.send(embed=embed, view=OrderTicketView(self.shop, approved=True, emoji_template=confirmed))
             # Renomear somente se necessário, para reduzir PATCHs e rate limits.
             desired_name = channel_name('approved', channel.name.split('-', 1)[-1])
             if not channel.name.startswith('🟢'):
