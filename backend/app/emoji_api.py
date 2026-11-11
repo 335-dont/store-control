@@ -31,7 +31,14 @@ async def discord_request(method, endpoint, payload=None):
     if response.status_code == 429:
         raise HTTPException(429, 'Limite temporário do Discord. Aguarde antes de tentar novamente.')
     if response.status_code in (401,403):
-        raise HTTPException(503, 'Bot sem autorização para gerenciar emojis do aplicativo')
+        try:
+            error = response.json()
+        except ValueError:
+            error = {}
+        code = error.get('code', 'desconhecido') if isinstance(error, dict) else 'desconhecido'
+        if response.status_code == 401:
+            raise HTTPException(503, f'Discord HTTP 401 (código {code}): token do bot inválido ou expirado no serviço web. Confira DISCORD_BOT_TOKEN.')
+        raise HTTPException(503, f'Discord HTTP 403 (código {code}): acesso negado aos emojis da aplicação. Confirme que DISCORD_APPLICATION_ID pertence ao mesmo bot do token e que a aplicação tem acesso ao recurso.')
     if response.status_code >= 400:
         detail = response.json().get('message', 'Erro do Discord') if response.headers.get('content-type','').startswith('application/json') else 'Erro do Discord'
         raise HTTPException(400 if response.status_code < 500 else 502, f'Discord: {detail}')
