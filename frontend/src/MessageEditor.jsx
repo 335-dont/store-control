@@ -3,6 +3,17 @@ import './message-editor.css';
 const TYPES=[['shop','Painel de compras'],['cart','Carrinho'],['stock','Estoque'],['pix','Pagamento Pix'],['review','Pagamento em análise'],['approved','Pagamento aprovado'],['rejected','Pagamento rejeitado'],['delivery','Entregas'],['ticket','Ticket de compra'],['logs','Logs'],['expired','Pedido expirado'],['order','Resumo do pedido'],['purchase_confirmed','Compra confirmada (manual)'],['private_server','Servidor privado (link)']];
 const BASE={title:'',description:'',color:'#C3A06B',footer:'',image:'',thumbnail:'',emojis:{}};
 const EMOJI_FIELDS={
+ shop:[['shop_buy','Botão: comprar MM2','🛒'],['shop_history','Botão: histórico','📜'],['shop_stock','Botão: visualizar estoque','📦']],
+ cart:[['cart_title','Título do carrinho','🛒']],
+ stock:[['stock_title','Título do estoque','📦']],
+ pix:[['pix_title','Título do Pix','💠']],
+ review:[['review_title','Título: pagamento em análise','🔎']],
+ approved:[['approved_title','Título: pagamento aprovado','✅']],
+ rejected:[['rejected_title','Título: pagamento rejeitado','❌']],
+ delivery:[['delivery_title','Título: entregas','🛒']],
+ logs:[['logs_title','Título: logs','📋']],
+ expired:[['expired_title','Título: pedido expirado','⌛']],
+ order:[['order_title','Título: pedido','🛒']],
  purchase_confirmed:[['confirmed_notice','Aviso de confirmação','✅'],['confirmed_products','Produtos adquiridos','🛍️'],['confirmed_item','Produto','📦'],['confirmed_total','Total','💰'],['confirmed_buyer','Comprador','👤'],['confirmed_delivery','Entrega','📦'],['staff_link','Menu: enviar link','🔗'],['staff_notify','Menu: notificar cliente','🔔'],['staff_delivered','Menu: produto entregue','📦']],
  private_server:[['private_button','Botão: entrar no servidor','🔰']],
  ticket:[['staff_approve','Menu: aprovar pagamento','✅'],['staff_reject','Menu: rejeitar pagamento','❌'],['ticket_copy','Botão: copiar Pix','🔗'],['ticket_paid','Botão: já paguei','💳']]

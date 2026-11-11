@@ -125,12 +125,12 @@ def render_exact_template(embed, template, variables):
         embed.title = replace(template['title'])[:256]
     if template.get('description'):
         desc = replace(template['description'])
-        # A descrição só substitui a padrão se os dados obrigatórios estiverem presentes.
-        required = ('{produto}', '{valor}', '{cliente}') if 'produto' in variables else ('{link}',)
-        if all(token in template['description'] for token in required):
-            embed.description = desc[:4096]
-        else:
-            embed.description = (desc + '\n\n' + (embed.description or ''))[:4096]
+        # Não duplicar a mensagem padrão. Os dados do pedido são garantidos abaixo.
+        missing = []
+        for token, label in (('{produto}', 'Produtos adquiridos'), ('{valor}', 'Total'), ('{cliente}', 'Comprador')):
+            if token in variables and token not in template['description']:
+                missing.append(f"**{label}**\n{variables[token]}")
+        embed.description = (desc + ('\n\n' + '\n\n'.join(missing) if missing else ''))[:4096]
     if template.get('footer'):
         embed.set_footer(text=replace(template['footer'])[:2048])
     if template.get('color'):
@@ -1140,7 +1140,19 @@ class OrderTicketView(discord.ui.View):
         templates = await self.shop.fetch_message_templates(channel.guild.id)
         confirmed = templates.get('purchase_confirmed', {})
         e = lambda key: configured_emoji(confirmed, key)
-        lines = [f"• {e('confirmed_item')} **{item['name']}** ({item['quantity']}x) — "
+        # O pedido já guarda o emoji do produto na hora da compra.
+        # Priorize o emoji atual do catálogo quando o produto ainda existir.
+        try:
+            stock_data = await self.shop.fetch(channel.guild.id)
+            current_products = {str(p['id']): p for p in stock_data.get('products', [])}
+        except (httpx.HTTPError, ValueError, KeyError):
+            current_products = {}
+        def item_emoji(item):
+            product = current_products.get(str(item.get('product_id')), {})
+            value = product.get('emoji') or item.get('emoji') or e('confirmed_item')
+            # URL de imagem não pode ser renderizada como emoji inline no Discord.
+            return value if not str(value).startswith(('http://', 'https://')) else e('confirmed_item')
+        lines = [f"• {item_emoji(item)} **{item['name']}** ({item['quantity']}x) — "
                  f"{reais(Decimal(item['unit_price_cents']) * item['quantity'] / 100)}"
                  for item in order.get('items', [])]
         products_text = '\n'.join(lines) or 'Nenhum produto'
