@@ -593,12 +593,6 @@ class CartView(discord.ui.View):
         embed = await self.shop.configured_cart_embed(self.cart, data)
         if self.cart.stage == 'categories':
             embed.add_field(name='Categorias', value='Selecione uma categoria abaixo para começar.', inline=False)
-        elif self.cart.stage == 'products':
-            category = next((c for c in data.get('catalogs', []) if
-                str(c['id']) == str(self.cart.category_id)), None)
-            embed.add_field(name='Produtos disponíveis', value='Categoria: **' +
-                (category['name'] if category else 'Selecionada') +
-                '**\nSelecione um produto para adicioná-lo.', inline=False)
         elif self.cart.stage == 'quantity':
             product = next((p for p in data.get('products', []) if
                 str(p['id']) == str(self.cart.selected_id)), None)
