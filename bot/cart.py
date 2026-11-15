@@ -67,6 +67,8 @@ def apply_message_template(embed, template, variables=None):
         text = str(value or '')
         for key, replacement in variables.items():
             text = text.replace('{' + key + '}', str(replacement))
+        for key in EMOJI_DEFAULTS:
+            text = text.replace('{emoji_' + key + '}', configured_emoji(template, key))
         return text
     if template.get('title'):
         embed.title = render(template['title'])[:256]
@@ -97,6 +99,7 @@ EMOJI_DEFAULTS = {
     'staff_link': '🔗', 'staff_notify': '🔔', 'staff_delivered': '📦',
     'staff_approve': '✅', 'staff_reject': '❌', 'private_button': '🔰',
     'private_title': '🎮', 'ticket_copy': '🔗', 'ticket_paid': '💳',
+    'delivery_title': '🛒', 'delivery_customer': '👤', 'delivery_paid': '💵', 'delivery_products': '🛍️',
 }
 
 def configured_emoji(template, key):
@@ -1254,24 +1257,25 @@ class OrderTicketView(discord.ui.View):
             products = '\n'.join(lines) or 'Nenhum produto informado'
             # Discord limita a descrição a 4096 caracteres.
             total = reais(order.get('total') or '0')
+            templates = await self.shop.fetch_message_templates(interaction.guild_id)
+            delivery_template = templates.get('delivery') or {}
             heading = (
-                f'👤 **Cliente**\n<@{buyer}>{role_text}\n\n'
-                f'💵 **Valor Pago**\n`{total}`\n\n'
-                '🛍️ **Produtos Adquiridos**\n'
+                f"{configured_emoji(delivery_template, 'delivery_customer')} **Cliente**\n<@{buyer}>{role_text}\n\n"
+                f"{configured_emoji(delivery_template, 'delivery_paid')} **Valor Pago**\n`{total}`\n\n"
+                f"{configured_emoji(delivery_template, 'delivery_products')} **Produtos Adquiridos**\n" 
             )
             max_products = max(0, 4096 - len(heading) - 3)
             if len(products) > max_products:
                 products = products[:max_products - 3] + '...'
             embed = discord.Embed(
-                title='🛒 Novo Pedido Entregue',
+                title=f"{configured_emoji(delivery_template, 'delivery_title')} Novo Pedido Entregue",
                 description=heading + products,
                 color=0xD6B37A,
             )
             if user is not None:
                 embed.set_thumbnail(url=user.display_avatar.url)
             embed.set_footer(text='Agradecemos pela sua preferência!')
-            templates = await self.shop.fetch_message_templates(interaction.guild_id)
-            apply_message_template(embed, templates.get('delivery'), {
+            apply_message_template(embed, delivery_template, {
                 'cliente': f'<@{buyer}>{role_text}',
                 'valor': total,
                 'pedido': str(order.get('id', '')),
