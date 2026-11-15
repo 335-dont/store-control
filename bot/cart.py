@@ -1275,6 +1275,30 @@ class OrderTicketView(discord.ui.View):
             if user is not None:
                 embed.set_thumbnail(url=user.display_avatar.url)
             embed.set_footer(text='Agradecemos pela sua preferência!')
+            # Compatibilidade com modelos antigos: os emojis escolhidos no painel
+            # prevalecem sobre símbolos fixos no título e nas seções padrão.
+            selected_emojis = delivery_template.get('emojis') or {}
+            if selected_emojis:
+                def replace_delivery_icons(value):
+                    if not isinstance(value, str):
+                        return value
+                    for key, label in (
+                        ('delivery_customer', 'Cliente'),
+                        ('delivery_paid', 'Valor Pago'),
+                        ('delivery_products', 'Produtos Adquiridos'),
+                    ):
+                        if selected_emojis.get(key):
+                            # Troca somente o emoji inicial de cabeçalhos conhecidos,
+                            # sem alterar nomes, valores, menções ou conteúdo livre.
+                            pattern = r'(?m)^(?:[^\w\s*\{][^\s*]*\s+)?(\*\*' + re.escape(label) + r'\*\*)'
+                            value = re.sub(pattern, lambda m: '{emoji_' + key + '} ' + m.group(1), value)
+                    if selected_emojis.get('delivery_title'):
+                        value = re.sub(r'^(?:[^\w\s\{][^\s]*\s+)?Novo Pedido Entregue$',
+                                       '{emoji_delivery_title} Novo Pedido Entregue', value)
+                    return value
+                delivery_template = dict(delivery_template)
+                delivery_template['title'] = replace_delivery_icons(delivery_template.get('title', ''))
+                delivery_template['description'] = replace_delivery_icons(delivery_template.get('description', ''))
             apply_message_template(embed, delivery_template, {
                 'cliente': f'<@{buyer}>{role_text}',
                 'valor': total,
