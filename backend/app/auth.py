@@ -1,6 +1,8 @@
 """Discord OAuth2 authentication; server-side token exchange, signed HttpOnly session."""
 import os
 import secrets
+import asyncio
+import time
 import hashlib
 from datetime import datetime, timedelta, timezone
 from cryptography.fernet import Fernet
@@ -165,6 +167,7 @@ def logout(request: Request):
     require_same_origin(request)
     user = session_user(request)
     if user:
+        _guild_cache.pop(str(user['id']), None)
         with SessionLocal() as db:
             row = db.get(DiscordCredential, str(user['id']))
             if row:
@@ -180,21 +183,53 @@ def logout(request: Request):
 ADMINISTRATOR = 0x8
 MANAGE_GUILD = 0x20
 
-async def managed_guilds(request: Request):
-    user = session_user(request)
-    if not user:
-        raise HTTPException(401, 'Faça login com Discord')
-    token = await discord_token(user['id'])
-    async with httpx.AsyncClient(timeout=15) as http:
+# Cache curto por usuário para evitar consultar Discord em cada endpoint do painel.
+# A checagem de permissões permanece obrigatória e é renovada a cada 45 segundos.
+_GUILD_CACHE_TTL = 45
+_guild_cache = {}
+_guild_inflight = {}
+_guild_cache_lock = asyncio.Lock()
+
+async def _fetch_managed_guilds(user_id):
+    token = await discord_token(user_id)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as http:
         result = await http.get(f'{DISCORD_API}/users/@me/guilds',
                                 headers={'Authorization': f'Bearer {token}'})
     if result.status_code == 401:
         raise HTTPException(401, 'Autorização Discord expirada. Entre novamente.')
     if result.status_code == 429:
-        raise HTTPException(503, 'Discord limitou consultas temporariamente. Aguarde e tente novamente.')
+        raise HTTPException(503, 'Discord limitou consultas temporariamente. Tente novamente.')
     if result.status_code != 200:
-        raise HTTPException(502, f'Discord indisponível para listar servidores (HTTP {result.status_code})')
+        raise HTTPException(502, f'Discord indisponível (HTTP {result.status_code})')
     return [g for g in result.json() if g.get('owner') or int(g.get('permissions', '0')) & (ADMINISTRATOR | MANAGE_GUILD)]
+
+async def managed_guilds(request: Request):
+    user = session_user(request)
+    if not user:
+        raise HTTPException(401, 'Faça login com Discord')
+    user_id = str(user['id'])
+    now = time.monotonic()
+    cached = _guild_cache.get(user_id)
+    if cached and cached[0] > now:
+        return cached[1]
+    # Deduplica chamadas paralelas dos componentes no carregamento da página.
+    async with _guild_cache_lock:
+        cached = _guild_cache.get(user_id)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+        task = _guild_inflight.get(user_id)
+        if task is None:
+            task = asyncio.create_task(_fetch_managed_guilds(user_id))
+            _guild_inflight[user_id] = task
+    try:
+        value = await asyncio.shield(task)
+        _guild_cache[user_id] = (time.monotonic() + _GUILD_CACHE_TTL, value)
+        return value
+    finally:
+        if task.done():
+            async with _guild_cache_lock:
+                if _guild_inflight.get(user_id) is task:
+                    _guild_inflight.pop(user_id, None)
 
 @router.get('/guilds')
 async def guilds(request: Request):

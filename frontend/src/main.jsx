@@ -64,6 +64,7 @@ function DiscordProfile(){
  const [guildError,setGuildError]=useState('');
  const [needsLogin,setNeedsLogin]=useState(false);
  const [selected,setSelected]=useState(null);
+ const [guildIdInput,setGuildIdInput]=useState('');
  const [busy,setBusy]=useState('');
  const [notice,setNotice]=useState('');
  useEffect(()=>{let live=true;authRequest('/auth/me').then(u=>{if(live)setUser(u)}).catch(()=>{}).finally(()=>{if(live)setLoading(false)});return()=>{live=false}},[]);
@@ -116,6 +117,11 @@ function DiscordProfile(){
       {guilds.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
      </select><ChevronDown size={16} aria-hidden="true"/>
     </div>
+    <form onSubmit={e=>{e.preventDefault();if(/^\d{17,22}$/.test(guildIdInput))void chooseGuild(guildIdInput);else setGuildError('Informe um ID de servidor válido (17 a 22 dígitos).')}} style={{display:'flex',gap:6,marginTop:8}}>
+     <input aria-label="ID do servidor Discord" inputMode="numeric" pattern="[0-9]{17,22}" placeholder="ID do servidor Discord" value={guildIdInput} onChange={e=>setGuildIdInput(e.target.value.trim())} style={{minWidth:0,flex:1,padding:'9px',borderRadius:8,border:'1px solid #555',background:'transparent',color:'inherit'}}/>
+     <button className="profile-option" type="submit" disabled={!!busy||guildLoading}>Conectar</button>
+    </form>
+    <p className="profile-help">O ID escolhe o servidor diretamente; a permissão de administrador ainda é verificada pelo Discord.</p>
     {!guildLoading&&!guildError&&guilds.length===0&&<p className="profile-help">Nenhum servidor administrável encontrado.</p>}
     {current&&<div className="guild-current">{current.icon_url&&<img src={current.icon_url} alt=""/>}<span>{current.bot_installed===true?'Bot instalado':current.bot_installed===false?'Bot não instalado':'Instalação não verificada'}</span>{current.bot_installed===false&&current.invite_url&&<a className="guild-invite" href={current.invite_url} target="_blank" rel="noopener noreferrer">Adicionar bot</a>}</div>}
     <p className="profile-status" role="status">{busy==='select'?'Selecionando servidor…':notice}</p>

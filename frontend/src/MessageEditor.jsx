@@ -52,10 +52,10 @@ export default function MessageEditor({notify}){
   catch(e){setAppEmojis([]);setEmojiError(e.message||'Falha ao carregar emojis')}
   finally{setEmojiLoading(false)}
  };
- useEffect(()=>{setAppEmojis([]);setEmojiError('');if(guild)void refreshEmojis(guild)},[guild]);
- const openEmojiPicker=(key,label,fallback)=>{setEmojiSearch('');setEmojiPicker({key,label,fallback});void refreshEmojis()};
+ useEffect(()=>{setAppEmojis([]);setEmojiError('')},[guild]);
+ const openEmojiPicker=(key,label,fallback)=>{setEmojiSearch('');setEmojiPicker({key,label,fallback});if(!appEmojis.length)void refreshEmojis()};
  const selectEmoji=(value)=>{change('emojis',{...item.emojis,[emojiPicker.key]:value});setEmojiPicker(null)};
- const save=async()=>{if(!guild)return;setBusy(true);setError('');try{const result=await get('/api/store/message-templates',guild,{method:'PUT',body:JSON.stringify({templates})});const check=await get('/api/store/message-templates',guild);if(JSON.stringify(result.templates)!==JSON.stringify(check.templates))throw Error('O banco não confirmou o salvamento');setTemplates(check.templates);setSaved(true);notify?.('Modelos salvos no banco de dados')}catch(e){setError('Não foi possível salvar: '+e.message)}finally{setBusy(false)}};
+ const save=async()=>{if(!guild)return;setBusy(true);setError('');try{const result=await get('/api/store/message-templates',guild,{method:'PUT',body:JSON.stringify({templates})});if(!result.templates)throw Error('O banco não confirmou o salvamento');setTemplates(result.templates);setSaved(true);notify?.('Modelos salvos no banco de dados')}catch(e){setError('Não foi possível salvar: '+e.message)}finally{setBusy(false)}};
  const publish=async()=>{
    if(!/^\d{17,22}$/.test(channelId)||!/^\d{17,22}$/.test(messageId)){setError('Informe os IDs numericos do canal e da mensagem');return}
    if(!saved){setError('Salve suas alteracoes antes de atualizar');return}

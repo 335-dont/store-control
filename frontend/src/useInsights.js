@@ -5,9 +5,12 @@ const empty={orders:[],clients:[],top_products:[],daily:{},summary:{},truncated:
 let state={data:empty,loading:true,error:''};
 const subscribers=new Set();
 let timer=null,generation=0;
+let pending=false;
 const emit=()=>{state={...state};subscribers.forEach(listener=>listener())};
 const get=()=>state;
 async function refresh(){
+ if(pending)return;
+ pending=true;
  const requestId=++generation;
  state={...state,loading:true};emit();
  try{
@@ -18,7 +21,8 @@ async function refresh(){
   const json=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(json.detail||`Erro HTTP ${r.status}`);
   if(requestId===generation){state={data:json,loading:false,error:''};emit()}
- }catch(e){if(requestId===generation){state={data:empty,loading:false,error:e.message};emit()}}
+ }catch(e){if(requestId===generation){state={data:state.data,loading:false,error:e.message};emit()}}
+ finally{pending=false}
 }
 function subscribe(fn){
  subscribers.add(fn);
