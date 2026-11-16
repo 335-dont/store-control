@@ -175,8 +175,9 @@ def dispatch_approved_push(guild_id: str, order_id: str, total_cents: int):
     with SessionLocal() as db:
         subscriptions = db.scalars(select(PushSubscription).where(PushSubscription.guild_id == guild_id)).all()
         records = [(r.endpoint_hash, r.user_id, r.subscription) for r in subscriptions]
-    text = f'Pedido {order_id[:8]} · R$ {total_cents / 100:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
-    payload = json.dumps({'title': '✅ Pagamento aprovado — Eleve', 'body': text,
+    # Mensagem de push compacta, sem número do pedido ou textos extras.
+    amount = f'{total_cents / 100:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
+    payload = json.dumps({'title': 'Venda Aprovada!', 'body': f'Valor: R$ {amount}',
                           'url': '/?view=pedidos', 'tag': f'paid-{order_id}'}, ensure_ascii=False)
     logger.info('Push pagamento aprovado: servidor=%s pedido=%s dispositivos=%d', guild_id, order_id[:8], len(records))
     for key, uid, info in records:
