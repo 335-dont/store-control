@@ -8,7 +8,7 @@ import os
 import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, select
 from sqlalchemy.orm import Mapped, mapped_column, Session
@@ -174,7 +174,7 @@ def read_order(guild_id: str, order_id: str, db: Session = Depends(get_db)):
 
 
 @router.post('/guilds/{guild_id}/orders/{order_id}/status', dependencies=[Depends(require_bot_key)])
-def change_status(guild_id: str, order_id: str, payload: ChangeStatus, db: Session = Depends(get_db)):
+def change_status(guild_id: str, order_id: str, payload: ChangeStatus, db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
     """Operação interna: bot deve validar o papel do usuário antes de chamar."""
     validate_guild(guild_id)
     allowed = {'awaiting_payment': {'payment_review', 'approved', 'rejected', 'cancelled'},
@@ -205,6 +205,9 @@ def change_status(guild_id: str, order_id: str, payload: ChangeStatus, db: Sessi
             store.revision += 1
         order.status = payload.status
         db.commit()
+        if payload.status == 'approved' and background_tasks is not None:
+            from .push_notifications import dispatch_approved_push
+            background_tasks.add_task(dispatch_approved_push, guild_id, order.id, order.total_cents)
         return output(order)
     except Exception:
         db.rollback()

@@ -12,3 +12,6 @@ Base.metadata.create_all(bind=engine)
 
 from app import insights  # noqa: F401
 Base.metadata.create_all(bind=engine)
+
+from app import push_notifications  # noqa: F401
+Base.metadata.create_all(bind=engine)
