@@ -3,9 +3,12 @@ import hashlib
 import json
 import logging
 import os
+import time
+import threading
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, JSON, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -16,6 +19,8 @@ from .store import authorize
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/api/store/push', tags=['web-push'])
+_test_last = {}
+_test_lock = threading.Lock()
 
 
 class PushSubscription(Base):
@@ -66,6 +71,19 @@ async def subscription_count(request: Request, db: Session = Depends(get_db)):
     return {'count': len(rows)}
 
 
+class SubscriptionCheck(BaseModel):
+    endpoint: str = Field(min_length=30, max_length=2048)
+
+
+@router.post('/subscriptions/check')
+async def check_push(request: Request, payload: SubscriptionCheck, db: Session = Depends(get_db)):
+    require_same_origin(request)
+    gid = await authorize(request)
+    uid = str(session_user(request)['id'])
+    key = hashlib.sha256(payload.endpoint.encode()).hexdigest()
+    return {'registered': db.get(PushSubscription, (key, uid, gid)) is not None}
+
+
 @router.post('/subscriptions')
 async def register_push(request: Request, payload: SubscriptionPayload, db: Session = Depends(get_db)):
     require_same_origin(request)
@@ -98,6 +116,51 @@ async def remove_push(request: Request, payload: SubscriptionPayload, db: Sessio
     return {'ok': True}
 
 
+def _send_to_endpoint(info, payload):
+    from pywebpush import webpush
+    webpush(subscription_info=info, data=payload,
+            vapid_private_key=os.environ['WEB_PUSH_VAPID_PRIVATE_KEY'],
+            vapid_claims={'sub': os.environ['WEB_PUSH_VAPID_SUBJECT']}, timeout=8)
+
+
+@router.post('/test')
+async def test_push(request: Request, db: Session = Depends(get_db)):
+    """Send a test notification only to devices saved by this user in this guild."""
+    require_same_origin(request)
+    gid = await authorize(request)
+    uid = str(session_user(request)['id'])
+    if not _vapid_ready():
+        raise HTTPException(503, 'Chaves VAPID não configuradas')
+    rows = db.scalars(select(PushSubscription).where(
+        PushSubscription.guild_id == gid, PushSubscription.user_id == uid)).all()
+    if not rows:
+        raise HTTPException(409, 'Este aparelho ainda não está cadastrado. Toque em Ativar notificações.')
+    now = time.monotonic()
+    throttle_key = (gid, uid)
+    with _test_lock:
+        if now - _test_last.get(throttle_key, -1000) < 60:
+            raise HTTPException(429, 'Espere um minuto antes de testar novamente.')
+        _test_last[throttle_key] = now
+    message = json.dumps({'title':'🔔 Teste de notificação — Eleve',
+                          'body':'Se você recebeu este aviso, o envio push está funcionando.',
+                          'url':'/', 'tag':'eleve-test'}, ensure_ascii=False)
+    delivered, failed = 0, 0
+    for row in rows[:5]:
+        try:
+            await run_in_threadpool(_send_to_endpoint, row.subscription, message)
+            delivered += 1
+        except Exception as exc:
+            failed += 1
+            code = getattr(getattr(exc, 'response', None), 'status_code', None)
+            logger.warning('Falha no push de teste (HTTP %s, %s)', code, type(exc).__name__)
+            if code in (404, 410):
+                db.delete(row)
+    db.commit()
+    return {'sent':delivered, 'failed':failed, 'registered':len(rows),
+            'message':('Enviado ao serviço push. Verifique o iPhone.' if delivered else
+                       'Falha no envio. Confira os logs do backend no Railway.')}
+
+
 def dispatch_approved_push(guild_id: str, order_id: str, total_cents: int):
     """Called after commit, only on a real transition into approved."""
     if not _vapid_ready():
@@ -113,11 +176,11 @@ def dispatch_approved_push(guild_id: str, order_id: str, total_cents: int):
     text = f'Pedido {order_id[:8]} · R$ {total_cents / 100:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
     payload = json.dumps({'title': '✅ Pagamento aprovado — Eleve', 'body': text,
                           'url': '/?view=pedidos', 'tag': f'paid-{order_id}'}, ensure_ascii=False)
+    logger.info('Push pagamento aprovado: servidor=%s pedido=%s dispositivos=%d', guild_id, order_id[:8], len(records))
     for key, uid, info in records:
         try:
-            webpush(subscription_info=info, data=payload,
-                    vapid_private_key=os.environ['WEB_PUSH_VAPID_PRIVATE_KEY'],
-                    vapid_claims={'sub': os.environ['WEB_PUSH_VAPID_SUBJECT']}, timeout=10)
+            _send_to_endpoint(info, payload)
+            logger.info('Push de pedido enviado ao provedor: servidor=%s pedido=%s', guild_id, order_id[:8])
         except WebPushException as exc:
             code = getattr(getattr(exc, 'response', None), 'status_code', None)
             if code in (404, 410):
