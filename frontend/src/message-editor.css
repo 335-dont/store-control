@@ -31,3 +31,8 @@
 .msg-editor-category-tabs button:focus-visible{outline:2px solid var(--chart);outline-offset:2px}
 .msg-editor-category-description{color:var(--muted);font-size:12px;line-height:1.55;margin:-6px 0 0}
 @media(max-width:390px){.msg-editor-category-tabs button{font-size:12px;padding:11px 6px}}
+
+/* Prévia da mesma grade 2x2 dos botões do resumo no Discord. */
+.msg-cart-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.msg-cart-grid>span{min-width:0;display:flex;align-items:center;justify-content:center;gap:5px;text-align:center}
+@media(max-width:420px){.msg-cart-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}

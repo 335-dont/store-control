@@ -95,6 +95,8 @@ def apply_message_template(embed, template, variables=None):
 # Emojis configuráveis por servidor; códigos <:nome:id> são emojis da aplicação.
 EMOJI_DEFAULTS = {
     'shop_title': '🛒', 'shop_buy': '🛒', 'shop_history': '📜', 'shop_stock': '📦',
+    'cart_continue': '🛍️', 'cart_checkout': '✅', 'cart_empty': '🗑️', 'cart_close': '🔒',
+    'cart_back': '↩️', 'cart_summary': '🛒', 'cart_view': '🛒', 'cart_quantity_back': '↩️',
     'confirmed_notice': '✅', 'confirmed_products': '🛍️', 'confirmed_item': '📦',
     'confirmed_total': '💰', 'confirmed_buyer': '👤', 'confirmed_delivery': '📦',
     'staff_link': '🔗', 'staff_notify': '🔔', 'staff_delivered': '📦',
@@ -214,8 +216,10 @@ class Shop:
         if cart.message_id is None:
             raise RuntimeError('Mensagem principal do carrinho não encontrada')
         message = await channel.fetch_message(cart.message_id)
-        embed = await self.configured_cart_embed(cart, data)
-        await message.edit(embed=embed, view=CartView(self, cart, data))
+        templates = await self.fetch_message_templates(cart.guild_id)
+        embed = await self.configured_cart_embed(cart, data, templates)
+        await message.edit(embed=embed, view=CartView(self, cart, data, template=templates.get('cart')))
+
 
     def install_command(self):
         @self.tree.command(name='sincronizar_cargos', description='Sincroniza os cargos de compras dos clientes com pedidos entregues')
@@ -363,10 +367,11 @@ class Shop:
                 return channel
         return None
 
-    async def configured_cart_embed(self, cart, data):
+    async def configured_cart_embed(self, cart, data, templates=None):
         """Gera a embed e aplica a configuracao mais recente do servidor."""
         embed = self.cart_embed(cart, data)
-        templates = await self.fetch_message_templates(cart.guild_id)
+        if templates is None:
+            templates = await self.fetch_message_templates(cart.guild_id)
         template = templates.get('cart')
         if isinstance(template, dict):
             variables = {
@@ -450,8 +455,9 @@ class ShopPanel(discord.ui.View):
                     overwrites=overwrites, reason='Carrinho privado MM2')
                 cart = CartState(interaction.user.id, interaction.guild.id)
                 self.shop.carts[channel.id] = cart
-                message = await channel.send(interaction.user.mention, embed=await self.shop.configured_cart_embed(cart, data),
-                                   view=CartView(self.shop, cart, data), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+                templates = await self.shop.fetch_message_templates(cart.guild_id)
+                message = await channel.send(interaction.user.mention, embed=await self.shop.configured_cart_embed(cart, data, templates),
+                                   view=CartView(self.shop, cart, data, template=templates.get('cart')), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
                 cart.message_id = message.id
                 await interaction.followup.send(f'Seu carrinho: {channel.mention}', ephemeral=True)
             except (httpx.HTTPError, ValueError):
@@ -543,10 +549,11 @@ def menu_emoji(value):
 
 class CartView(discord.ui.View):
     """Uma única mensagem editável para todas as etapas do carrinho."""
-    def __init__(self, shop, cart, data=None):
+    def __init__(self, shop, cart, data=None, template=None):
         super().__init__(timeout=None)
         self.shop, self.cart = shop, cart
         self.data = data or {'catalogs': [], 'products': []}
+        self.cart_template = template if isinstance(template, dict) else {}
         self.build()
 
     async def interaction_check(self, interaction):
@@ -570,7 +577,8 @@ class CartView(discord.ui.View):
                 menu.callback = self.category_selected
                 self.add_item(menu)
             if self.cart.items:
-                self.button('Ver Carrinho', 'sc43:summary', self.summary, row=1)
+                self.button('Ver Carrinho', 'sc43:summary', self.summary, row=1, emoji_key='cart_view')
+
         elif stage == 'products':
             products = [p for p in data.get('products', []) if
                 str(p.get('catalogId')) == str(self.cart.category_id)][:25]
@@ -584,8 +592,8 @@ class CartView(discord.ui.View):
                         emoji=menu_emoji(p.get('emoji') or '📦')) for p in products], row=0)
                 menu.callback = self.product_selected
                 self.add_item(menu)
-            self.button('Voltar', 'sc43:back', self.back, row=1)
-            self.button('Prosseguir ao Carrinho', 'sc43:summary', self.summary, row=1)
+            self.button('Voltar', 'sc43:back', self.back, row=1, emoji_key='cart_back')
+            self.button('Prosseguir ao Carrinho', 'sc43:summary', self.summary, row=1, emoji_key='cart_summary')
         elif stage == 'edit':
             products = {str(p['id']): p for p in data.get('products', [])}
             entries = [(str(pid), qty) for pid, qty in self.cart.items.items() if qty > 0][:25]
@@ -599,10 +607,10 @@ class CartView(discord.ui.View):
                         for pid, qty in entries], row=0)
                 menu.callback = self.edit_selected
                 self.add_item(menu)
-            self.button('Continuar Comprando', 'sc43:continue', self.continue_buying, row=1)
-            self.button('Finalizar Pedido', 'sc43:checkout', self.checkout, row=1)
-            if entries:
-                self.button('Esvaziar Carrinho', 'sc43:empty', self.empty, row=2)
+            # ELEVE_CART_BUTTON_GRID_V1 — duas colunas e duas linhas no resumo.
+            self.button('Continuar Comprando', 'sc43:continue', self.continue_buying, row=1, emoji_key='cart_continue')
+            self.button('Finalizar Pedido', 'sc43:checkout', self.checkout, row=1, emoji_key='cart_checkout')
+            self.button('Esvaziar Carrinho', 'sc43:empty', self.empty, row=2, emoji_key='cart_empty', disabled=not bool(entries))
         elif stage == 'quantity':
             pid = str(self.cart.selected_id)
             product = next((p for p in data.get('products', []) if str(p['id']) == pid), None)
@@ -618,9 +626,11 @@ class CartView(discord.ui.View):
                             reais(Decimal(str(product['price'])) * n)) for n in choices], row=0)
                 menu.callback = self.quantity_selected
                 self.add_item(menu)
-            self.button('Voltar ao Carrinho', 'sc43:quantity-back', self.summary, row=1)
-        # Botao presente em todas as etapas: categorias, produtos, edicao e quantidade.
-        self.button('Fechar Carrinho', 'sc43:close-cart', self.close_cart, row=3)
+            self.button('Voltar ao Carrinho', 'sc43:quantity-back', self.summary, row=1, emoji_key='cart_quantity_back')
+        # Coloca Fechar ao lado do último botão, sem criar linha isolada
+        # no resumo: 2 botões na linha 1 e 2 na linha 2.
+        close_row = 2 if stage == 'edit' else (1 if stage in ('categories', 'quantity') else 2)
+        self.button('Fechar Carrinho', 'sc43:close-cart', self.close_cart, row=close_row, emoji_key='cart_close')
 
     async def close_cart(self, interaction):
         # A verificacao de proprietario e feita por interaction_check.
@@ -636,8 +646,10 @@ class CartView(discord.ui.View):
             return
         self.shop.carts.pop(channel.id, None)
 
-    def button(self, label, custom_id, callback, row):
-        button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary,
+    def button(self, label, custom_id, callback, row, emoji_key=None, disabled=False):
+        emoji = discord_component_emoji(self.cart_template, emoji_key) if emoji_key else None
+        button = discord.ui.Button(label=label, emoji=emoji, disabled=disabled,
+                                   style=discord.ButtonStyle.secondary,
                                    custom_id=custom_id, row=row)
         button.callback = callback
         self.add_item(button)
@@ -647,8 +659,10 @@ class CartView(discord.ui.View):
             data = await self.shop.fetch(self.cart.guild_id)
         removed = await prune_cart(self.shop, self.cart, data)
         self.data = data
+        templates = await self.shop.fetch_message_templates(self.cart.guild_id)
+        self.cart_template = templates.get('cart') or {}
         self.build()
-        embed = await self.shop.configured_cart_embed(self.cart, data)
+        embed = await self.shop.configured_cart_embed(self.cart, data, templates)
         if self.cart.stage == 'categories':
             embed.add_field(name='Categorias', value='Selecione uma categoria abaixo para começar.', inline=False)
         elif self.cart.stage == 'quantity':
