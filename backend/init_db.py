@@ -9,3 +9,6 @@ print('Tabelas iniciais criadas.')
 
 from app import message_templates  # noqa: F401
 Base.metadata.create_all(bind=engine)
+
+from app import insights  # noqa: F401
+Base.metadata.create_all(bind=engine)

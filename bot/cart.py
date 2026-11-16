@@ -683,7 +683,9 @@ class CartView(discord.ui.View):
             try:
                 async with httpx.AsyncClient(timeout=20) as http:
                     response=await http.post(f'{self.shop.api_url}/api/bot/guilds/{self.cart.guild_id}/orders',
-                        headers={'X-Bot-Key':self.shop.key},json={'buyer_id':str(self.cart.owner_id),'items':lines,'reservation_minutes':15})
+                        headers={'X-Bot-Key':self.shop.key},json={'buyer_id':str(self.cart.owner_id),'items':lines,'reservation_minutes':15,
+                              'buyer_name':str(interaction.user.display_name)[:100],
+                              'buyer_avatar':str(interaction.user.avatar.key if interaction.user.avatar else '')})
                 if response.status_code==409:
                     return await interaction.followup.send('Estoque insuficiente ou alterado. Confira os produtos.',ephemeral=True)
                 response.raise_for_status()

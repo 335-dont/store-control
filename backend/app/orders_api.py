@@ -44,6 +44,8 @@ class CreateOrder(BaseModel):
     buyer_id: str = Field(pattern=r'^\d{1,32}$')
     items: list[OrderLine] = Field(min_length=1, max_length=100)
     reservation_minutes: int = Field(default=15, ge=1, le=1440)
+    buyer_name: str = Field(default="", max_length=100)
+    buyer_avatar: str = Field(default="", max_length=128)
 
 
 class ChangeStatus(BaseModel):
@@ -138,6 +140,16 @@ def create_order(guild_id: str, payload: CreateOrder, db: Session = Depends(get_
                            expires_at=now + timedelta(minutes=payload.reservation_minutes),
                            created_at=now)
         db.add(order)
+        # Capture the buyer profile without exposing Discord tokens to the browser.
+        from .insights import BuyerProfile
+        if payload.buyer_name or payload.buyer_avatar:
+            profile = db.get(BuyerProfile, (guild_id, payload.buyer_id)) or BuyerProfile(
+                guild_id=guild_id, buyer_id=payload.buyer_id,
+                username='', avatar_hash='', checked_at=now)
+            profile.username = payload.buyer_name or profile.username
+            profile.avatar_hash = payload.buyer_avatar or profile.avatar_hash
+            profile.checked_at = now
+            db.add(profile)
         db.commit()
         return output(order)
     except Exception:
