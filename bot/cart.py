@@ -499,27 +499,44 @@ class ShopPanel(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             data = await self.shop.fetch(interaction.guild_id)
+            templates = await self.shop.fetch_message_templates(interaction.guild_id)
+            stock_color = stock_embed_color(templates)
             if not data.get('products'):
                 return await interaction.followup.send('Nenhum produto disponível.', ephemeral=True)
             products = [p for p in data.get('products', []) if p.get('active', True)]
             cats = [c for c in data.get('catalogs', []) if any(p.get('catalogId') == c.get('id') for p in products)]
             if cats:
-                await interaction.followup.send('Selecione uma categoria:', view=StockCategories(data, interaction.user.id), ephemeral=True)
+                await interaction.followup.send('Selecione uma categoria:', view=StockCategories(data, interaction.user.id, stock_color), ephemeral=True)
             else:
                 await interaction.followup.send(
-                    embed=stock_category_embed({'name': 'Estoque da loja', 'emoji': '📁'}, products),
+                    embed=stock_category_embed({'name': 'Estoque da loja', 'emoji': '📁'}, products, stock_color),
                     ephemeral=True)
         except (httpx.HTTPError, ValueError):
             await interaction.followup.send('Falha ao consultar o estoque.', ephemeral=True)
 
 
+# ELEVE_STOCK_COLOR_SITE_V1 — cores do editor por servidor.
+def stock_embed_color(templates):
+    """Use Edição Compras > Estoque; fallback ao painel de compras."""
+    if not isinstance(templates, dict):
+        return 0xC3A06B
+    for key in ('stock', 'shop'):
+        template = templates.get(key)
+        if not isinstance(template, dict):
+            continue
+        value = template.get('color')
+        if isinstance(value, str) and re.fullmatch(r'#[0-9a-fA-F]{6}', value):
+            return int(value[1:], 16)
+    return 0xC3A06B
+
+
 # ELEVE_STOCK_LIST_CATEGORY_V1 — exibir estoque no formato da categoria.
-def stock_category_embed(category, products):
+def stock_category_embed(category, products, color=0xC3A06B):
     """Uma categoria como titulo; uma linha por produto, como no catalogo Discord."""
     title = str((category or {}).get('name') or 'Produtos')[:240]
     category_emoji = str((category or {}).get('emoji') or '📁').strip()
     # Evita caracteres de markdown no titulo introduzidos por nomes cadastrados.
-    embed = discord.Embed(title=f'{category_emoji} {title}'[:256], color=0xC3A06B)
+    embed = discord.Embed(title=f'{category_emoji} {title}'[:256], color=color)
     lines = []
     for product in products:
         if not product.get('active', True):
@@ -539,10 +556,11 @@ def stock_category_embed(category, products):
 
 
 class StockCategories(discord.ui.View):
-    def __init__(self, data, owner):
+    def __init__(self, data, owner, stock_color=0xC3A06B):
         super().__init__(timeout=180)
         self.owner = owner
         self.data = data
+        self.stock_color = stock_color
         cats = [c for c in data['catalogs'] if any(p['catalogId'] == c['id'] for p in data['products'])][:25]
         self.add_item(StockCategorySelect(self, cats))
 
@@ -565,7 +583,7 @@ class StockCategorySelect(discord.ui.Select):
                          if str(c.get('id')) == selected_id), None)
         products = [p for p in self.stock_view.data.get('products', [])
                     if str(p.get('catalogId')) == selected_id and p.get('active', True)]
-        embed = stock_category_embed(category, products)
+        embed = stock_category_embed(category, products, self.stock_view.stock_color)
         await interaction.response.edit_message(embed=embed, view=self.stock_view)
 
 
