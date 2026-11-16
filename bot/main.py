@@ -7,6 +7,7 @@ import discord
 import httpx
 from discord import app_commands
 from cart import Shop, OrderTicketView
+from support_ticket import install_support_tickets
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ['DISCORD_BOT_TOKEN']
@@ -18,6 +19,7 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 shop = Shop(client, tree, API_URL, INTERNAL_KEY)
+install_support_tickets(shop, tree, client)
 client.add_view(OrderTicketView(shop))
 client.add_view(OrderTicketView(shop,approved=True))
 

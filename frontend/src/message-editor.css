@@ -18,3 +18,7 @@
 .msg-emoji-alert{padding:12px;border:1px solid #b55;border-radius:10px;color:var(--text);font-size:13px}.msg-emoji-alert button,.msg-emoji-dialog-footer button{padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);cursor:pointer}.msg-emoji-empty{font-size:13px;color:var(--muted);text-align:center;padding:18px}
 .msg-emoji-dialog-footer{padding:15px 22px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 @media(max-width:550px){.msg-emoji-dialog-head,.msg-emoji-dialog-content,.msg-emoji-dialog-footer{padding:15px}.msg-emoji-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+/* Opções do painel de atendimento */
+.msg-ticket-option{padding:14px;margin:12px 0;border:1px solid var(--border,#424553);border-radius:12px}
+.msg-ticket-option .msg-emoji-row{margin-top:10px;gap:10px;display:flex;align-items:center;flex-wrap:wrap}

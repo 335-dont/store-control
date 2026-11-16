@@ -8,12 +8,18 @@ from .store import authorize
 from .auth import require_same_origin
 
 router = APIRouter(tags=['message-templates'])
-KEYS = {'shop','cart','stock','pix','review','approved','rejected','delivery','ticket','logs','expired','order','purchase_confirmed','private_server'}
+KEYS = {'shop','cart','stock','pix','review','approved','rejected','delivery','ticket','logs','expired','order','purchase_confirmed','private_server','ticket_panel','ticket_open'}
 
 class GuildMessageTemplates(Base):
     __tablename__ = 'guild_message_templates'
     guild_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     templates: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+class TicketOption(BaseModel):
+    id: str = Field(pattern=r'^[a-zA-Z0-9_-]{1,100}$')
+    label: str = Field(min_length=1, max_length=100)
+    description: str = Field(default='', max_length=100)
+    emoji: str = Field(default='🎫', max_length=100)
 
 class Template(BaseModel):
     title: str = Field(default='', max_length=256)
@@ -23,6 +29,8 @@ class Template(BaseModel):
     image: str = Field(default='', max_length=2048)
     thumbnail: str = Field(default='', max_length=2048)
     emojis: dict[str, str] = Field(default_factory=dict, max_length=30)
+    options: list[TicketOption] = Field(default_factory=list, max_length=25)
+    placeholder: str = Field(default='', max_length=150)
 
 class Payload(BaseModel):
     templates: dict[str, Template]
@@ -52,6 +60,10 @@ async def put_templates(request: Request, payload: Payload, db: Session = Depend
     import re
     emoji_pattern = re.compile(r'^(?:<a?:[A-Za-z0-9_]{2,32}:[0-9]{15,22}>|[^\r\n<>]{1,12})$')
     for t in payload.templates.values():
+        if len({opt.id for opt in t.options}) != len(t.options):
+            raise HTTPException(422, 'Opções do painel precisam ter IDs diferentes')
+        if any(opt.emoji and not emoji_pattern.fullmatch(opt.emoji) for opt in t.options):
+            raise HTTPException(422, 'Emoji de opção inválido')
         if any(not re.fullmatch(r'[a-z_]{2,40}', k) or not emoji_pattern.fullmatch(v) for k,v in t.emojis.items()):
             raise HTTPException(422, 'Emoji ou identificador inválido')
         for url in (t.image, t.thumbnail):
