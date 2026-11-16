@@ -124,17 +124,18 @@ def _send_to_endpoint(info, payload):
 
 
 @router.post('/test')
-async def test_push(request: Request, db: Session = Depends(get_db)):
+async def test_push(request: Request, payload: SubscriptionCheck, db: Session = Depends(get_db)):
     """Send a test notification only to devices saved by this user in this guild."""
     require_same_origin(request)
     gid = await authorize(request)
     uid = str(session_user(request)['id'])
     if not _vapid_ready():
         raise HTTPException(503, 'Chaves VAPID não configuradas')
-    rows = db.scalars(select(PushSubscription).where(
-        PushSubscription.guild_id == gid, PushSubscription.user_id == uid)).all()
+    endpoint_key = hashlib.sha256(payload.endpoint.encode()).hexdigest()
+    selected = db.get(PushSubscription, (endpoint_key, uid, gid))
+    rows = [selected] if selected else []
     if not rows:
-        raise HTTPException(409, 'Este aparelho ainda não está cadastrado. Toque em Ativar notificações.')
+        raise HTTPException(409, 'Este iPhone não está inscrito neste servidor. Toque em Ativar notificações.')
     now = time.monotonic()
     throttle_key = (gid, uid)
     with _test_lock:
@@ -144,7 +145,7 @@ async def test_push(request: Request, db: Session = Depends(get_db)):
     message = json.dumps({'title':'🔔 Teste de notificação — Eleve',
                           'body':'Se você recebeu este aviso, o envio push está funcionando.',
                           'url':'/', 'tag':'eleve-test'}, ensure_ascii=False)
-    delivered, failed = 0, 0
+    delivered, failed, failure_codes = 0, 0, []
     for row in rows[:5]:
         try:
             await run_in_threadpool(_send_to_endpoint, row.subscription, message)
@@ -152,11 +153,12 @@ async def test_push(request: Request, db: Session = Depends(get_db)):
         except Exception as exc:
             failed += 1
             code = getattr(getattr(exc, 'response', None), 'status_code', None)
+            failure_codes.append(str(code) if code is not None else type(exc).__name__)
             logger.warning('Falha no push de teste (HTTP %s, %s)', code, type(exc).__name__)
             if code in (404, 410):
                 db.delete(row)
     db.commit()
-    return {'sent':delivered, 'failed':failed, 'registered':len(rows),
+    return {'sent':delivered, 'failed':failed, 'registered':len(rows), 'failure_codes':failure_codes,
             'message':('Enviado ao serviço push. Verifique o iPhone.' if delivered else
                        'Falha no envio. Confira os logs do backend no Railway.')}
 

@@ -3,6 +3,7 @@ import './push-settings.css';
 
 const installed = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 const supported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const base64url = bytes => bytes ? btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'') : '';
 const urlBytes = value => {
  const padding = '='.repeat((4-value.length%4)%4);
  const raw=atob((value+padding).replace(/-/g,'+').replace(/_/g,'/'));
@@ -31,15 +32,26 @@ export default function PushSettings({onClose}){
    const reg=await navigator.serviceWorker.register('/sw.js',{scope:'/'});
    await navigator.serviceWorker.ready;
    let sub=await reg.pushManager.getSubscription();
+   // Uma inscrição criada com chave VAPID antiga não pode receber pushes da chave atual.
+   const registeredKey=base64url(sub?.options?.applicationServerKey);
+   if(sub && registeredKey && registeredKey!==cfg.public_key){
+     await sub.unsubscribe();sub=null;
+   }
    if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBytes(cfg.public_key)});
    await request('/subscriptions',gid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub.toJSON())});
    setRegistered(true);setEnabled(true);setStatus('Dispositivo cadastrado no servidor! Use Testar aviso para confirmar o recebimento.');
   }catch(e){setStatus(e.message)}finally{setBusy(false)}
  };
- const test=async()=>{setBusy(true);setStatus('Enviando aviso de teste…');try{const gid=await selectedGuild();const data=await request('/test',gid,{method:'POST'});setStatus(`${data.message} Enviados: ${data.sent}; falhas: ${data.failed}.`)}catch(e){setStatus(e.message)}finally{setBusy(false)}};
+ const localTest=async()=>{setBusy(true);setStatus('Verificando notificações locais…');try{
+  if(Notification.permission!=='granted')throw Error('Permissão de notificação não concedida pelo iPhone.');
+  const reg=await navigator.serviceWorker.ready;
+  await reg.showNotification('🔔 Teste local — Eleve',{body:'Esta notificação foi criada no iPhone, sem passar pelo Railway.',icon:'/eleve-192.png',tag:'eleve-local-test-'+Date.now()});
+  setStatus('Teste local solicitado ao iPhone. Se não apareceu, verifique Ajustes → Notificações → Eleve e os modos Foco.');
+ }catch(e){setStatus('Falha no teste local: '+e.message)}finally{setBusy(false)}};
+ const test=async()=>{setBusy(true);setStatus('Enviando aviso de teste…');try{const gid=await selectedGuild();const reg=await navigator.serviceWorker.getRegistration('/');const sub=await reg?.pushManager.getSubscription();if(!sub)throw Error('Este iPhone não tem uma inscrição ativa. Toque em Ativar notificações.');const data=await request('/test',gid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:sub.endpoint})});setStatus(`${data.message} Enviados: ${data.sent}; falhas: ${data.failed}.${data.failure_codes?.length?' Erros HTTP: '+data.failure_codes.join(', '):''}`)}catch(e){setStatus(e.message)}finally{setBusy(false)}};
  const disable=async()=>{
   setBusy(true);setStatus('');try{const gid=await selectedGuild();const reg=await navigator.serviceWorker.getRegistration('/');const sub=await reg?.pushManager.getSubscription();if(sub){await request('/subscriptions',gid,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub.toJSON())});await sub.unsubscribe()}setEnabled(false);setRegistered(false);setStatus('Notificações desativadas neste dispositivo.')}catch(e){setStatus(e.message)}finally{setBusy(false)}
  };
  return <div className="push-cover" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><section className="push-dialog" role="dialog" aria-modal="true" aria-label="Notificações da Eleve"><div className="push-head"><div><h2>Notificações da Eleve</h2><p>Receba um aviso quando um pagamento for aprovado no seu servidor.</p></div><button onClick={onClose} aria-label="Fechar">✕</button></div>
- <div className="push-body"><p><strong>Status:</strong> {enabled?'Inscrição salva no servidor':registered?'Cadastradas':'Não confirmadas neste servidor'}</p>{!standalone&&<p className="push-guide">📱 iPhone: abra o site no Safari → Compartilhar → Adicionar à Tela de Início. Depois abra a Eleve pelo novo ícone e toque em Ativar notificações.</p>}{config&&!config.enabled&&<p className="push-guide">O administrador precisa configurar as chaves VAPID no Railway para liberar os avisos.</p>}<div className="push-buttons"><button className="pill primary" onClick={enable} disabled={busy||!canUse||config?.enabled===false}>{busy?'Configurando…':'Ativar notificações'}</button>{enabled&&<button className="pill" onClick={test} disabled={busy}>Testar aviso</button>}{enabled&&<button className="pill" onClick={disable} disabled={busy}>Desativar</button>}</div>{status&&<p role="status" className="push-status">{status}</p>}<small>As notificações podem chegar mesmo com o site fechado. Dependem da permissão do iPhone, da conexão e do serviço de notificações da Apple.</small></div></section></div>
+ <div className="push-body"><p><strong>Status:</strong> {enabled?'Inscrição salva no servidor':registered?'Cadastradas':'Não confirmadas neste servidor'}</p>{!standalone&&<p className="push-guide">📱 iPhone: abra o site no Safari → Compartilhar → Adicionar à Tela de Início. Depois abra a Eleve pelo novo ícone e toque em Ativar notificações.</p>}{config&&!config.enabled&&<p className="push-guide">O administrador precisa configurar as chaves VAPID no Railway para liberar os avisos.</p>}<div className="push-buttons"><button className="pill primary" onClick={enable} disabled={busy||!canUse||config?.enabled===false}>{busy?'Configurando…':'Ativar notificações'}</button>{enabled&&<button className="pill" onClick={localTest} disabled={busy}>Testar no iPhone</button>}{enabled&&<button className="pill" onClick={test} disabled={busy}>Testar aviso</button>}{enabled&&<button className="pill" onClick={disable} disabled={busy}>Desativar</button>}</div>{status&&<p role="status" className="push-status">{status}</p>}<small>As notificações podem chegar mesmo com o site fechado. Dependem da permissão do iPhone, da conexão e do serviço de notificações da Apple.</small></div></section></div>
 }
