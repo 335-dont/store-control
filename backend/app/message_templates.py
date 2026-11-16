@@ -29,6 +29,7 @@ class Template(BaseModel):
     image: str = Field(default='', max_length=2048)
     thumbnail: str = Field(default='', max_length=2048)
     emojis: dict[str, str] = Field(default_factory=dict, max_length=30)
+    buttons: dict[str, str] = Field(default_factory=dict, max_length=3)
     options: list[TicketOption] = Field(default_factory=list, max_length=25)
     placeholder: str = Field(default='', max_length=150)
 
@@ -60,6 +61,9 @@ async def put_templates(request: Request, payload: Payload, db: Session = Depend
     import re
     emoji_pattern = re.compile(r'^(?:<a?:[A-Za-z0-9_]{2,32}:[0-9]{15,22}>|[^\r\n<>]{1,12})$')
     for t in payload.templates.values():
+        if any(key not in {'shop_buy','shop_history','shop_stock'} or not isinstance(label,str)
+               or not 1 <= len(label.strip()) <= 80 for key,label in t.buttons.items()):
+            raise HTTPException(422, 'Nome de botão inválido (1 a 80 caracteres)')
         if len({opt.id for opt in t.options}) != len(t.options):
             raise HTTPException(422, 'Opções do painel precisam ter IDs diferentes')
         if any(opt.emoji and not emoji_pattern.fullmatch(opt.emoji) for opt in t.options):

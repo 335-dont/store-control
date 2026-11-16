@@ -94,6 +94,7 @@ def apply_message_template(embed, template, variables=None):
 
 # Emojis configuráveis por servidor; códigos <:nome:id> são emojis da aplicação.
 EMOJI_DEFAULTS = {
+    'shop_title': '🛒', 'shop_buy': '🛒', 'shop_history': '📜', 'shop_stock': '📦',
     'confirmed_notice': '✅', 'confirmed_products': '🛍️', 'confirmed_item': '📦',
     'confirmed_total': '💰', 'confirmed_buyer': '👤', 'confirmed_delivery': '📦',
     'staff_link': '🔗', 'staff_notify': '🔔', 'staff_delivered': '📦',
@@ -141,6 +142,29 @@ def render_exact_template(embed, template, variables):
         except (ValueError, TypeError): pass
     if template.get('thumbnail'): embed.set_thumbnail(url=template['thumbnail'])
     if template.get('image'): embed.set_image(url=template['image'])
+    return embed
+
+
+# ELEVE_SHOP_PANEL_V3 — aparência configurada por servidor.
+SHOP_BUTTON_DEFAULTS = {'shop_buy': 'Comprar MM2', 'shop_history': 'Histórico de Compras',
+                        'shop_stock': 'Visualizar Estoque da Loja'}
+
+
+def build_public_shop_embed(template):
+    template = template if isinstance(template, dict) else {}
+    embed = discord.Embed(title='🛒 Loja MM2', description='Escolha uma opção abaixo para começar.', color=0xC3A06B)
+    if template.get('description'):
+        embed.description = None
+    apply_message_template(embed, template)
+    icon = configured_emoji(template, 'shop_title')
+    if (template.get('emojis') or {}).get('shop_title'):
+        title = embed.title or 'Loja MM2'
+        if '{emoji_shop_title}' not in str(template.get('title', '')):
+            if title.startswith('🛒'):
+                title = title[len('🛒'):].lstrip()
+            # Prepend the selected emoji only when no custom icon is already leading the title.
+            if not re.match(r'^<a?:[A-Za-z0-9_]{2,32}:[0-9]{15,22}>', title):
+                embed.title = (icon + ' ' + title)[:256]
     return embed
 
 
@@ -222,13 +246,9 @@ class Shop:
                     ephemeral=True
                 )
             # Atualiza o painel público já existente, sem criar mensagens duplicadas.
-            embed = discord.Embed(title='🛒 Loja MM2', description='Escolha uma opção abaixo para começar.', color=0xC3A06B)
             templates = await self.fetch_message_templates(interaction.guild_id)
-            # Painel publico: o texto salvo substitui integralmente o texto padrao.
-            shop_template = templates.get('shop')
-            if isinstance(shop_template, dict) and shop_template.get('description'):
-                embed.description = None
-            apply_message_template(embed, shop_template)
+            shop_template = templates.get('shop') or {}
+            embed = build_public_shop_embed(shop_template)
             try:
                 # Busca somente mensagens do próprio bot com o botão persistente do painel.
                 existing = None
@@ -240,10 +260,10 @@ class Shop:
                         existing = msg
                         break
                 if existing:
-                    await existing.edit(embed=embed, view=ShopPanel(self))
+                    await existing.edit(embed=embed, view=ShopPanel(self, shop_template))
                     response = 'Painel de compras atualizado neste canal.'
                 else:
-                    await interaction.channel.send(embed=embed, view=ShopPanel(self))
+                    await interaction.channel.send(embed=embed, view=ShopPanel(self, shop_template))
                     response = 'Painel de compras publicado neste canal.'
                 await interaction.response.send_message(response, ephemeral=True)
             except discord.HTTPException:
@@ -265,12 +285,10 @@ class Shop:
                 if msg.author.id!=self.client.user.id:raise ValueError('Mensagem nao pertence ao bot')
                 if not any(getattr(c,'custom_id',None)=='sc42:buy' for row in msg.components for c in getattr(row,'children',[])):
                     raise ValueError('Mensagem nao e o painel publico de compras')
-                embed=discord.Embed(title='🛒 Loja MM2',description='Escolha uma opcao abaixo para comecar.',color=0x167bff)
                 templates=await self.fetch_message_templates(guild.id)
-                tpl=templates.get('shop')
-                if isinstance(tpl,dict) and tpl.get('description'):embed.description=None
-                apply_message_template(embed,tpl)
-                await msg.edit(embed=embed,view=ShopPanel(self))
+                tpl=templates.get('shop') or {}
+                embed=build_public_shop_embed(tpl)
+                await msg.edit(embed=embed,view=ShopPanel(self, tpl))
                 status='done';detail='Painel atualizado no Discord'
             except (ValueError,discord.HTTPException,httpx.HTTPError) as exc:
                 detail=str(exc)[:230]
@@ -386,9 +404,19 @@ class Shop:
 
 
 class ShopPanel(discord.ui.View):
-    def __init__(self, shop):
+    def __init__(self, shop, template=None):
         super().__init__(timeout=None)
         self.shop = shop
+        template = template if isinstance(template, dict) else {}
+        labels = template.get('buttons') or {}
+        for key, name in (('shop_buy', 'buy'), ('shop_history', 'history'), ('shop_stock', 'view_stock')):
+            button = getattr(self, name, None)
+            # discord.py decorators create Button instances in self.children.
+            control = next((b for b in self.children if getattr(b, 'custom_id', None) ==
+                            {'shop_buy':'sc42:buy', 'shop_history':'sc42:history', 'shop_stock':'sc42:stock'}[key]), None)
+            if control is not None:
+                control.label = str(labels.get(key) or SHOP_BUTTON_DEFAULTS[key])[:80]
+                control.emoji = discord_component_emoji(template, key)
 
     @discord.ui.button(label='Comprar MM2', emoji='🛒', style=discord.ButtonStyle.secondary, custom_id='sc42:buy')
     async def buy(self, interaction, button):
@@ -435,7 +463,30 @@ class ShopPanel(discord.ui.View):
 
     @discord.ui.button(label='Histórico de Compras', emoji='📜', style=discord.ButtonStyle.secondary, custom_id='sc42:history')
     async def history(self, interaction, button):
-        await interaction.response.send_message('O histórico estará disponível na etapa de pedidos.', ephemeral=True)
+        if not interaction.guild_id:
+            return await interaction.response.send_message('Abra pelo servidor da loja.', ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            async with httpx.AsyncClient(timeout=12) as http:
+                resp = await http.get(
+                    f'{self.shop.api_url}/api/bot/guilds/{interaction.guild_id}/buyers/{interaction.user.id}/history',
+                    headers={'X-Bot-Key': self.shop.key})
+                resp.raise_for_status()
+                orders = resp.json().get('orders') or []
+            if not orders:
+                return await interaction.followup.send('Você ainda não possui compras aprovadas nesta loja.', ephemeral=True)
+            lines = []
+            for order in orders[:10]:
+                products = ', '.join(f"{str(p.get('name','Produto'))[:32]} ×{p.get('quantity',1)}" for p in order.get('items',[])[:4])
+                created = str(order.get('created_at',''))[:10]
+                label = 'Entregue' if order.get('status') == 'delivered' else 'Aprovado'
+                lines.append(f"**{created} · {label} · {reais(order.get('total',0))}**\n{products[:160] or 'Produtos não informados'}")
+            embed = discord.Embed(title='📜 Seu histórico de compras',
+                                  description='\n\n'.join(lines)[:4096], color=0xC3A06B)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except (httpx.HTTPError, ValueError, TypeError):
+            LOG.exception('Falha ao consultar histórico de compras')
+            await interaction.followup.send('Não foi possível carregar seu histórico. Tente novamente.', ephemeral=True)
 
     @discord.ui.button(label='Visualizar Estoque da Loja', emoji='📦', style=discord.ButtonStyle.secondary, custom_id='sc42:stock', row=1)
     async def view_stock(self, interaction, button):
@@ -444,7 +495,14 @@ class ShopPanel(discord.ui.View):
             data = await self.shop.fetch(interaction.guild_id)
             if not data.get('products'):
                 return await interaction.followup.send('Nenhum produto disponível.', ephemeral=True)
-            await interaction.followup.send('Selecione uma categoria:', view=StockCategories(data, interaction.user.id), ephemeral=True)
+            products = [p for p in data.get('products', []) if p.get('active', True)]
+            cats = [c for c in data.get('catalogs', []) if any(p.get('catalogId') == c.get('id') for p in products)]
+            if cats:
+                await interaction.followup.send('Selecione uma categoria:', view=StockCategories(data, interaction.user.id), ephemeral=True)
+            else:
+                lines = [f"{p.get('emoji') or '📦'} **{p['name']}** — {reais(p['price'])} | Qtd: {'∞' if p.get('unlimited') else p.get('stock',0)}" for p in products[:25]]
+                await interaction.followup.send(embed=discord.Embed(title='📦 Estoque da loja',
+                    description='\n'.join(lines)[:4000] or 'Sem produtos disponíveis.'), ephemeral=True)
         except (httpx.HTTPError, ValueError):
             await interaction.followup.send('Falha ao consultar o estoque.', ephemeral=True)
 

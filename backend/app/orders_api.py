@@ -232,3 +232,16 @@ def expire_all(db: Session = Depends(get_db)):
             db.rollback()
             raise
     return {'expired': total}
+
+
+@router.get('/guilds/{guild_id}/buyers/{buyer_id}/history', dependencies=[Depends(require_bot_key)])
+def buyer_purchase_history(guild_id: str, buyer_id: str, db: Session = Depends(get_db)):
+    # Historico privado do comprador.
+    validate_guild(guild_id)
+    if not buyer_id.isdecimal() or len(buyer_id) > 32:
+        raise HTTPException(422, 'Cliente inválido')
+    rows = db.scalars(select(GuildOrder).where(
+        GuildOrder.guild_id == guild_id, GuildOrder.buyer_id == buyer_id,
+        GuildOrder.status.in_(['approved', 'delivered'])
+    ).order_by(GuildOrder.created_at.desc()).limit(10)).all()
+    return {'orders': [output(order) for order in rows]}
