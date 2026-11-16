@@ -506,11 +506,36 @@ class ShopPanel(discord.ui.View):
             if cats:
                 await interaction.followup.send('Selecione uma categoria:', view=StockCategories(data, interaction.user.id), ephemeral=True)
             else:
-                lines = [f"{p.get('emoji') or '📦'} **{p['name']}** — {reais(p['price'])} | Qtd: {'∞' if p.get('unlimited') else p.get('stock',0)}" for p in products[:25]]
-                await interaction.followup.send(embed=discord.Embed(title='📦 Estoque da loja',
-                    description='\n'.join(lines)[:4000] or 'Sem produtos disponíveis.'), ephemeral=True)
+                await interaction.followup.send(
+                    embed=stock_category_embed({'name': 'Estoque da loja', 'emoji': '📁'}, products),
+                    ephemeral=True)
         except (httpx.HTTPError, ValueError):
             await interaction.followup.send('Falha ao consultar o estoque.', ephemeral=True)
+
+
+# ELEVE_STOCK_LIST_CATEGORY_V1 — exibir estoque no formato da categoria.
+def stock_category_embed(category, products):
+    """Uma categoria como titulo; uma linha por produto, como no catalogo Discord."""
+    title = str((category or {}).get('name') or 'Produtos')[:240]
+    category_emoji = str((category or {}).get('emoji') or '📁').strip()
+    # Evita caracteres de markdown no titulo introduzidos por nomes cadastrados.
+    embed = discord.Embed(title=f'{category_emoji} {title}'[:256], color=0xC3A06B)
+    lines = []
+    for product in products:
+        if not product.get('active', True):
+            continue
+        quantity = '∞' if product.get('unlimited') else str(product.get('stock', 0))
+        emoji = str(product.get('emoji') or '📦')
+        name = str(product.get('name') or 'Produto').replace('`', '′').replace('\n', ' ')[:100]
+        price = reais(product.get('price') or 0)
+        # Formato: • 📦 `95x Iceflake Set — R$ 7,00`
+        line = f'• {emoji} `{quantity}x {name} — {price}`'
+        if sum(len(item) + 1 for item in lines) + len(line) > 3900:
+            lines.append('…')
+            break
+        lines.append(line)
+    embed.description = '\n'.join(lines) or 'Nenhum produto disponivel nesta categoria.'
+    return embed
 
 
 class StockCategories(discord.ui.View):
@@ -523,19 +548,25 @@ class StockCategories(discord.ui.View):
 
 
 class StockCategorySelect(discord.ui.Select):
-    def __init__(self, parent, cats):
-        self.stock_view = parent
-        super().__init__(placeholder='Selecione uma categoria', options=[discord.SelectOption(label=c['name'][:100], value=c['id']) for c in cats])
+    def __init__(self, stock_view, cats):
+        # parent e propriedade interna reservada do discord.py.
+        self.stock_view = stock_view
+        super().__init__(
+            placeholder='Selecione uma categoria',
+            options=[discord.SelectOption(label=str(c['name'])[:100], value=str(c['id']),
+                                          emoji=menu_emoji(c.get('emoji'))) for c in cats]
+        )
 
     async def callback(self, interaction):
         if interaction.user.id != self.stock_view.owner:
-            return await interaction.response.send_message('Esta consulta é privada.', ephemeral=True)
-        products = [p for p in self.stock_view.data['products'] if p['catalogId'] == self.values[0]]
-        lines = [f"{p.get('emoji') or '📦'} **{p['name']}** — {reais(p['price'])} | Qtd: {'∞' if p.get('unlimited') else p['stock']}" for p in products]
-        content = '\n'.join(lines)
-        if len(content) > 3800:
-            content = content[:3790] + '…'
-        await interaction.response.edit_message(embed=discord.Embed(title='📦 Estoque da loja', description=content or 'Sem produtos.'), view=self.parent)
+            return await interaction.response.send_message('Esta consulta e privada.', ephemeral=True)
+        selected_id = str(self.values[0])
+        category = next((c for c in self.stock_view.data.get('catalogs', [])
+                         if str(c.get('id')) == selected_id), None)
+        products = [p for p in self.stock_view.data.get('products', [])
+                    if str(p.get('catalogId')) == selected_id and p.get('active', True)]
+        embed = stock_category_embed(category, products)
+        await interaction.response.edit_message(embed=embed, view=self.stock_view)
 
 
 def menu_emoji(value):
