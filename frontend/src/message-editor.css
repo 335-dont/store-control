@@ -22,3 +22,12 @@
 /* Opções do painel de atendimento */
 .msg-ticket-option{padding:14px;margin:12px 0;border:1px solid var(--border,#424553);border-radius:12px}
 .msg-ticket-option .msg-emoji-row{margin-top:10px;gap:10px;display:flex;align-items:center;flex-wrap:wrap}
+
+/* Separacao visual do editor: Compras x Ticket de suporte. */
+.msg-editor-category-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.msg-editor-category-tabs button{min-width:0;padding:12px 10px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--muted);font:inherit;font-size:13px;font-weight:650;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+.msg-editor-category-tabs button.active{color:var(--text);background:var(--hover);border-color:var(--chart)}
+.msg-editor-category-tabs button:hover{border-color:var(--chart)}
+.msg-editor-category-tabs button:focus-visible{outline:2px solid var(--chart);outline-offset:2px}
+.msg-editor-category-description{color:var(--muted);font-size:12px;line-height:1.55;margin:-6px 0 0}
+@media(max-width:390px){.msg-editor-category-tabs button{font-size:12px;padding:11px 6px}}

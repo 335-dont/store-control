@@ -1,6 +1,10 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import './message-editor.css';
 const TYPES=[['shop','Painel de compras'],['cart','Carrinho'],['stock','Estoque'],['pix','Pagamento Pix'],['review','Pagamento em análise'],['approved','Pagamento aprovado'],['rejected','Pagamento rejeitado'],['delivery','Entregas'],['ticket','Ticket de compra'],['ticket_panel','Painel de tickets (suporte)'],['ticket_open','Ticket de suporte aberto'],['logs','Logs'],['expired','Pedido expirado'],['order','Resumo do pedido'],['purchase_confirmed','Compra confirmada (manual)'],['private_server','Servidor privado (link)']];
+const EDITOR_GROUPS={
+ purchases:{label:'Edição Compras',description:'Painel da loja, carrinho, estoque, pagamentos, pedidos, entregas e mensagens relacionadas às compras.',kinds:TYPES.filter(([id])=>id!=='ticket_panel'&&id!=='ticket_open')},
+ support:{label:'Edição Ticket',description:'Somente o painel /painel-ticket, as opções do menu e a mensagem privada de atendimento.',kinds:TYPES.filter(([id])=>id==='ticket_panel'||id==='ticket_open')}
+};
 const BASE={title:'',description:'',color:'#C3A06B',footer:'',image:'',thumbnail:'',emojis:{},options:[],placeholder:''};
 const EMOJI_FIELDS={
  ticket_panel:[['ticket_panel_title','Título do painel de tickets','🎫']],
@@ -43,7 +47,7 @@ const DEFAULTS={
 const initial=(kind)=>({...BASE,...DEFAULTS[kind]});
 export default function MessageEditor({notify}){
  const [emojiPicker,setEmojiPicker]=useState(null),[emojiSearch,setEmojiSearch]=useState(''),[emojiLoading,setEmojiLoading]=useState(false),[emojiError,setEmojiError]=useState('');
- const [channelId,setChannelId]=useState(''),[messageId,setMessageId]=useState(''),[publishStatus,setPublishStatus]=useState(''),[guild,setGuild]=useState(''),[templates,setTemplates]=useState({}),[kind,setKind]=useState('cart'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[saved,setSaved]=useState(false),[appEmojis,setAppEmojis]=useState([]);
+ const [channelId,setChannelId]=useState(''),[messageId,setMessageId]=useState(''),[publishStatus,setPublishStatus]=useState(''),[guild,setGuild]=useState(''),[templates,setTemplates]=useState({}),[kind,setKind]=useState('cart'),[editorGroup,setEditorGroup]=useState('purchases'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[saved,setSaved]=useState(false),[appEmojis,setAppEmojis]=useState([]);
  const item=useMemo(()=>({...initial(kind),...templates[kind]}),[templates,kind]);
  const change=(key,value)=>{setSaved(false);setTemplates(old=>({...old,[kind]:{...initial(kind),...old[kind],[key]:value}}))};
  const get=async(url,id,opts={})=>{const r=await fetch(url,{credentials:'same-origin',headers:{'X-Store-Guild':id,...(opts.body?{'Content-Type':'application/json'}:{})},...opts});const d=await r.json();if(!r.ok)throw Error(d.detail||`HTTP ${r.status}`);return d};
@@ -81,7 +85,12 @@ export default function MessageEditor({notify}){
  const preview=v=>(v||'').replace(/\{emoji_([a-z_]+)\}/g,(_,k)=>item.emojis?.[k]||EMOJI_FIELDS[kind]?.find(x=>x[0]===k)?.[2]||'📦').replaceAll('{link}','https://www.roblox.com/games/...').replaceAll('{cliente}','@cliente · @+100$').replaceAll('{valor}','R$ 100,00').replaceAll('{pedido}','1234').replaceAll('{produto}','🔪 Heartblade ×2 — R$ 16,00').replaceAll('{assunto}','Suporte geral').replaceAll('{servidor}','Servidor Eleve');
  const visual=v=>preview(v).split(/(<a?:[A-Za-z0-9_]{2,32}:[0-9]{15,22}>)/g).map((part,i)=>emojiImage(part)?<img key={i} src={emojiImage(part)} alt={part} style={{width:20,height:20,verticalAlign:'middle',objectFit:'contain'}}/>:part);
  return <><div className="msg-editor"><section className="card msg-editor-card"><div className="msg-header"><div><div className="msg-eyebrow">PERSONALIZAÇÃO DO DISCORD</div><h2>Mensagens e embeds</h2><p>Edite os modelos de cada setor com uma prévia visual.</p></div><span className="msg-status">{saved?'Salvo no banco':'Alterações não salvas'}</span></div>
- <div className="msg-fields"><label className="msg-field"><span>Mensagem</span><select value={kind} onChange={e=>setKind(e.target.value)}>{TYPES.map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
+ <div className="msg-fields">
+ <div className="msg-editor-category-tabs" role="tablist" aria-label="Categoria de edição">
+  {Object.entries(EDITOR_GROUPS).map(([id,group])=><button key={id} type="button" role="tab" aria-selected={editorGroup===id} className={editorGroup===id?'active':''} onClick={()=>{setEditorGroup(id);setKind(id==='support'?'ticket_panel':'shop');setEmojiPicker(null);setError('')}}>{group.label}</button>)}
+ </div>
+ <p className="msg-editor-category-description">{EDITOR_GROUPS[editorGroup].description}</p>
+ <label className="msg-field"><span>{editorGroup==='support'?'Mensagem de suporte':'Mensagem de compra'}</span><select value={kind} onChange={e=>setKind(e.target.value)}>{EDITOR_GROUPS[editorGroup].kinds.map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
  <div className="msg-hint">{kind==='shop'?'Painel público: após salvar, use /publicar_loja no canal desejado para publicar ou atualizar a mensagem existente. Os botões continuam funcionando.':'Os modelos iniciais são editáveis. Suas configurações salvas têm prioridade.'}</div>
  {field('Título','title',false,'Título da embed')}{field('Descrição','description',true,'Texto da mensagem')}
  <div className="msg-vars"><span>Variáveis disponíveis:</span>{(kind==='ticket_open'?['{cliente}','{assunto}','{servidor}']:['{cliente}','{valor}','{pedido}','{produto}',...(kind==='private_server'?['{link}']:[])]).map(x=><button key={x} type="button" title="Copiar variável" onClick={()=>navigator.clipboard?.writeText(x)}>{x}</button>)}</div>
