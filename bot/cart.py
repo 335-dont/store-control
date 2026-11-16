@@ -524,13 +524,13 @@ class StockCategories(discord.ui.View):
 
 class StockCategorySelect(discord.ui.Select):
     def __init__(self, parent, cats):
-        self.parent = parent
+        self.stock_view = parent
         super().__init__(placeholder='Selecione uma categoria', options=[discord.SelectOption(label=c['name'][:100], value=c['id']) for c in cats])
 
     async def callback(self, interaction):
-        if interaction.user.id != self.parent.owner:
+        if interaction.user.id != self.stock_view.owner:
             return await interaction.response.send_message('Esta consulta é privada.', ephemeral=True)
-        products = [p for p in self.parent.data['products'] if p['catalogId'] == self.values[0]]
+        products = [p for p in self.stock_view.data['products'] if p['catalogId'] == self.values[0]]
         lines = [f"{p.get('emoji') or '📦'} **{p['name']}** — {reais(p['price'])} | Qtd: {'∞' if p.get('unlimited') else p['stock']}" for p in products]
         content = '\n'.join(lines)
         if len(content) > 3800:
